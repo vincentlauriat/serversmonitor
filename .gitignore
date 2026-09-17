@@ -1,0 +1,21 @@
+# session journals (never committed)
+COMMANDS.md
+MEMORY.md
+CHANGES.md
+TODOS.md
+PLAN.md
+.omc/
+
+# build artefacts
+release/
+web/build/
+web/node_modules/
+web/.svelte-kit/
+bin/
+*.db
+*.db-wal
+*.db-shm
+
+# local config
+.env
+.DS_Store
