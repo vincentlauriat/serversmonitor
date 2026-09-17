@@ -9,6 +9,8 @@ PLAN.md
 # build artefacts
 release/
 web/build/
+internal/hub/webdist/build/*
+!internal/hub/webdist/build/.gitkeep
 web/node_modules/
 web/.svelte-kit/
 bin/
