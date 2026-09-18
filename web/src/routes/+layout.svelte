@@ -46,6 +46,7 @@
   const nav = [
     { href: '/', label: 'Hosts' },
     { href: '/alerts', label: 'Alerts' },
+    { href: '/azure', label: 'Azure' },
     { href: '/settings', label: 'Settings' }
   ];
 </script>

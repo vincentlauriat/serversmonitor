@@ -154,3 +154,50 @@ export interface Delivery {
   kind: string;
   at: string;
 }
+
+export interface AzureRow {
+  id: string;
+  name: string;
+  type: string;
+  resource_group: string;
+  location: string;
+  /** null means nobody read it, which is never "stopped". */
+  state: string | null;
+  host?: string;
+  tags: Record<string, string>;
+  /** null means Azure has reported nothing, which is never zero. */
+  cost: number | null;
+  currency?: string;
+  deleted: boolean;
+}
+export interface AzureTotal {
+  currency: string;
+  spent: number;
+}
+export interface AzureSync {
+  ok: boolean;
+  message: string;
+  at: string;
+}
+export interface AzureView {
+  mode: string;
+  period: string;
+  rows: AzureRow[];
+  totals: AzureTotal[];
+  /** One figure for the whole hub, in whichever currency Azure bills. 0 = none. */
+  budget: number;
+  cost_as_of: string | null;
+  sync: Record<string, AzureSync>;
+}
+export interface AzureSettings {
+  mode: string;
+  tenant_id: string;
+  client_id: string;
+  client_secret_set: boolean;
+  mi_client_id: string;
+  subscription_id: string;
+  resource_groups: string[];
+  inventory_every_min: number;
+  cost_every_min: number;
+  budget_monthly: number;
+}

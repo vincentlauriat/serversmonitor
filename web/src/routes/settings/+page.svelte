@@ -1,10 +1,19 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type Delivery, type Host, type Notifications, type Rule, type Settings } from '$lib/api';
+  import {
+    api,
+    type AzureSettings,
+    type Delivery,
+    type Host,
+    type Notifications,
+    type Rule,
+    type Settings
+  } from '$lib/api';
   import { healthLabel, parseHeaders, parseRecipients, toPayload } from '$lib/notify';
+  import { parseGroups, toSettingsPayload } from '$lib/azure';
   import Modal from '$lib/components/Modal.svelte';
 
-  type Tab = 'hosts' | 'alerts' | 'notifications' | 'system';
+  type Tab = 'hosts' | 'alerts' | 'notifications' | 'azure' | 'system';
   let tab = $state<Tab>('hosts');
   let hosts = $state<Host[]>([]);
   let rules = $state<Rule[]>([]);
@@ -24,6 +33,10 @@
   let deliveries = $state<Delivery[]>([]);
   let testing = $state('');
 
+  let az = $state<AzureSettings | null>(null);
+  let clientSecret = $state<string | null>(null); // null = untouched
+  let groupsText = $state('');
+
   let showToken = $state(false);
   let tokenTitle = $state('');
   let install = $state('');
@@ -41,12 +54,13 @@
   ];
 
   async function load() {
-    const [h, a, s, n, d] = await Promise.all([
+    const [h, a, s, n, d, z] = await Promise.all([
       api.get<Host[]>('/api/v1/hosts'),
       api.get<{ rules: Rule[] }>('/api/v1/alerts'),
       api.get<Settings>('/api/v1/settings'),
       api.get<Notifications>('/api/v1/notifications'),
-      api.get<Delivery[]>('/api/v1/notifications/deliveries')
+      api.get<Delivery[]>('/api/v1/notifications/deliveries'),
+      api.get<AzureSettings>('/api/v1/azure/settings')
     ]);
     hosts = h;
     rules = a.rules;
@@ -57,11 +71,14 @@
       .map(([k, v]) => `${k}: ${v}`)
       .join('\n');
     deliveries = d;
+    az = z;
+    groupsText = z.resource_groups.join('\n');
   }
 
   onMount(() => {
     if (location.hash === '#alerts') tab = 'alerts';
     else if (location.hash === '#notifications') tab = 'notifications';
+    else if (location.hash === '#azure') tab = 'azure';
     else if (location.hash === '#system') tab = 'system';
     load().catch((e) => (err = String(e)));
   });
@@ -152,6 +169,29 @@
     }
   }
 
+  const saveAzure = () =>
+    run(async () => {
+      await api.put('/api/v1/azure/settings', toSettingsPayload(az!, parseGroups(groupsText), clientSecret));
+      clientSecret = null;
+      az = await api.get<AzureSettings>('/api/v1/azure/settings');
+    }, 'Azure settings saved.');
+
+  async function testAzure() {
+    testing = 'azure';
+    err = '';
+    msg = '';
+    try {
+      await api.post('/api/v1/azure/test');
+      msg = 'Azure answered: the credential works and the resource groups are readable.';
+    } catch (e) {
+      // Azure's own words. "Failed" alone gives nobody anything to act on, and
+      // the usual answer here is a role assignment that was never made.
+      err = e instanceof Error ? e.message : String(e);
+    } finally {
+      testing = '';
+    }
+  }
+
   let current = $state('');
   let next = $state('');
   const changePassword = () =>
@@ -166,6 +206,7 @@
     ['hosts', 'Hosts'],
     ['alerts', 'Alert rules'],
     ['notifications', 'Notifications'],
+    ['azure', 'Azure'],
     ['system', 'System']
   ];
 
@@ -438,6 +479,95 @@
         </tbody>
       </table>
     </div>
+  {/if}
+{:else if tab === 'azure'}
+  {#if az}
+    {@const inp = 'mt-1 w-full rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-800'}
+    {@const box = 'rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900'}
+    <form class="space-y-6 text-sm" onsubmit={(e) => { e.preventDefault(); saveAzure(); }}>
+      <div class={box}>
+        <label class="block max-w-md">
+          How this hub authenticates
+          <select class={inp} bind:value={az.mode}>
+            <option value="off">Off</option>
+            <option value="client_secret">App registration with a client secret</option>
+            <option value="managed_identity">Managed identity of the machine running this hub</option>
+          </select>
+        </label>
+        <p class="mt-2 text-xs text-zinc-500">
+          Either one needs the <strong>Reader</strong> role on each resource group below, granted by a
+          tenant administrator. Reader is enough for costs too: the Cost Management query is a read
+          operation despite being an HTTP POST.
+        </p>
+      </div>
+
+      {#if az.mode === 'client_secret'}
+        <div class={box}>
+          <div class="grid max-w-2xl gap-3 sm:grid-cols-2">
+            <label class="block">Tenant ID<input class={inp} bind:value={az.tenant_id} /></label>
+            <label class="block">Client ID<input class={inp} bind:value={az.client_id} /></label>
+            <label class="block sm:col-span-2">
+              Client secret
+              <input
+                class={inp}
+                type="password"
+                autocomplete="new-password"
+                placeholder={az.client_secret_set ? '•••••••• (unchanged)' : 'no secret set'}
+                value={clientSecret ?? ''}
+                oninput={(e) => (clientSecret = (e.currentTarget as HTMLInputElement).value)}
+              />
+              {#if clientSecret === ''}
+                <span class="text-xs text-amber-600">Saving now clears the stored secret.</span>
+              {/if}
+            </label>
+          </div>
+          <p class="mt-2 text-xs text-zinc-500">
+            The secret is stored in the hub's database and never sent back by the API.
+          </p>
+        </div>
+      {:else if az.mode === 'managed_identity'}
+        <div class={box}>
+          <label class="block max-w-md">
+            User-assigned identity client ID, optional
+            <input class={inp} bind:value={az.mi_client_id} placeholder="leave empty for the system-assigned identity" />
+          </label>
+        </div>
+      {/if}
+
+      <div class={box}>
+        <div class="grid max-w-2xl gap-3 sm:grid-cols-2">
+          <label class="block sm:col-span-2">Subscription ID<input class={inp} bind:value={az.subscription_id} /></label>
+          <label class="block sm:col-span-2">
+            Resource groups, one per line
+            <textarea class={inp} rows="3" bind:value={groupsText} placeholder="rg-dev-sandbox"></textarea>
+            <span class="text-xs text-zinc-500">
+              At least one is required. Reading a whole subscription needs a subscription-scope role
+              assignment this hub does not ask for.
+            </span>
+          </label>
+          <label class="block">Inventory every, minutes<input class={inp} type="number" min="1" bind:value={az.inventory_every_min} /></label>
+          <label class="block">Costs every, minutes<input class={inp} type="number" min="1" bind:value={az.cost_every_min} /></label>
+          <label class="block sm:col-span-2">
+            Monthly budget, 0 for none
+            <input class={inp} type="number" min="0" step="0.01" bind:value={az.budget_monthly} />
+            <span class="text-xs text-zinc-500">
+              Shown as a bar on the Azure page. Acting on it is a later lot; nothing is stopped or
+              alerted on today.
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div class="flex gap-2">
+        <button class="rounded bg-zinc-900 px-3 py-1.5 text-white dark:bg-zinc-100 dark:text-zinc-900">Save</button>
+        <button
+          type="button"
+          class="rounded border border-zinc-300 px-3 py-1.5 disabled:opacity-40 dark:border-zinc-700"
+          disabled={az.mode === 'off' || testing !== ''}
+          onclick={testAzure}>{testing === 'azure' ? 'Asking Azure…' : 'Test connection'}</button
+        >
+      </div>
+    </form>
   {/if}
 {:else}
   <form class="max-w-md space-y-3 text-sm" onsubmit={(e) => { e.preventDefault(); saveSettings(); }}>

@@ -12,6 +12,7 @@ import (
 
 	"github.com/vincentlauriat/serversmonitor/deploy"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/alerts"
+	"github.com/vincentlauriat/serversmonitor/internal/hub/azure"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/config"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/ingest"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/notify"
@@ -31,6 +32,23 @@ type Hub struct {
 
 	// Notification state. An atomic pointer rather than a mutex: the settings
 	// handler swaps the whole configuration, the evaluator only ever reads it.
+	// Azure state, same shape as the notification configuration: the settings
+	// handler swaps the whole thing, the sync only ever reads it.
+	acfg      atomic.Pointer[azure.Config]
+	aclient   atomic.Pointer[azure.Client]
+	azureBase string // tests only; empty means the real Azure
+	// akick wakes the run loop when the settings change, so a save syncs now
+	// rather than at the next tick. Buffered and sent to without blocking: a
+	// reload must never wait on a loop that is not running yet.
+	akick chan struct{}
+	// One guard per scope. An Azure sweep runs off the loop, so two of them can
+	// otherwise overlap — and two interleaved ReplaceAzureInventory
+	// transactions let one sweep's stale view mark the other's fresh rows
+	// deleted, which is exactly what the all-or-nothing transaction exists to
+	// prevent.
+	ainv  atomic.Bool
+	acost atomic.Bool
+
 	dispatch *notify.Dispatcher
 	ncfg     atomic.Pointer[notify.Config]
 	channels atomic.Pointer[[]notify.Channel]
@@ -71,10 +89,12 @@ func New(cfg config.Config, version string, log *slog.Logger) (*Hub, error) {
 	icfg := ingest.DefaultConfig()
 	icfg.IntervalSec = st.SettingInt("agent_interval_sec", 10)
 	agents := ingest.New(st, bus, icfg, log.With("component", "ingest"))
-	h := &Hub{cfg: cfg, log: log, st: st, bus: bus, agents: agents, machine: machine}
+	h := &Hub{cfg: cfg, log: log, st: st, bus: bus, agents: agents, machine: machine,
+		akick: make(chan struct{}, 1)}
 	h.dispatch = notify.NewDispatcher(st, notify.Options{Log: log.With("component", "notify")})
 	h.ReloadNotify()
-	h.handler = server.New(server.Deps{Store: st, Agents: agents, Bus: bus, Notify: h, Static: webdist.Build(), InstallScript: deploy.InstallScript,
+	h.ReloadAzure()
+	h.handler = server.New(server.Deps{Store: st, Agents: agents, Bus: bus, Notify: h, Azure: h, Static: webdist.Build(), InstallScript: deploy.InstallScript,
 		Version: version, Log: log.With("component", "server"), Secure: cfg.Secure})
 	return h, nil
 }
@@ -91,6 +111,15 @@ func (h *Hub) interval() time.Duration {
 func (h *Hub) Run(ctx context.Context) error {
 	h.dispatch.Start(ctx)
 	h.replayPendingDeliveries()
+	azureInv := time.NewTicker(h.azureInterval("inventory"))
+	azureCost := time.NewTicker(h.azureInterval("cost"))
+	defer azureInv.Stop()
+	defer azureCost.Stop()
+	select { // drop the kick New's own ReloadAzure left behind
+	case <-h.akick:
+	default:
+	}
+	h.goSyncAzure(ctx) // catch up at boot without delaying the first metric tick
 	fast := time.NewTicker(h.interval())
 	minute := time.NewTicker(time.Minute)
 	hour := time.NewTicker(time.Hour)
@@ -107,6 +136,19 @@ func (h *Hub) Run(ctx context.Context) error {
 			fast.Reset(h.interval())
 		case <-minute.C:
 			h.evaluate()
+		case <-h.akick:
+			// The settings changed. Sync now, and realign both tickers: they
+			// were built with whatever cadence was in force at boot, which for
+			// an integration that was off is one hour.
+			h.goSyncAzure(ctx)
+			azureInv.Reset(h.azureInterval("inventory"))
+			azureCost.Reset(h.azureInterval("cost"))
+		case <-azureInv.C:
+			h.goSyncAzureInventory(ctx)
+			azureInv.Reset(h.azureInterval("inventory"))
+		case <-azureCost.C:
+			h.goSyncAzureCosts(ctx)
+			azureCost.Reset(h.azureInterval("cost"))
 		case <-hour.C:
 			h.hourly()
 		}
