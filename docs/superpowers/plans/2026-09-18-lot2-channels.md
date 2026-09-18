@@ -888,12 +888,25 @@ func TestBuildMailHeaders(t *testing.T) {
 func TestBuildMailRefusesHeaderInjection(t *testing.T) {
 	// A host name is user input. If it reached the Subject line unescaped, a
 	// name containing CRLF would let anyone add headers to the hub's own mail.
+	//
+	// The property is that no new header *line* appears. "Bcc:" surviving as
+	// text inside the Subject value is harmless, and asserting its absence
+	// anywhere in the block would test the wrong thing.
 	m := fired()
 	m.HostName = "pi\r\nBcc: attacker@example.test"
 	raw := string(BuildMail(testSMTPConfig(), m, at, "x@hub"))
 	head, _, _ := strings.Cut(raw, "\r\n\r\n")
-	if strings.Contains(head, "Bcc:") {
-		t.Fatalf("header injection got through:\n%s", head)
+	lines := strings.Split(head, "\r\n")
+	if len(lines) != 8 {
+		t.Fatalf("expected the 8 headers BuildMail writes, got %d:\n%s", len(lines), head)
+	}
+	for _, l := range lines {
+		if strings.HasPrefix(strings.ToLower(l), "bcc:") {
+			t.Fatalf("header injection got through:\n%s", head)
+		}
+	}
+	if !strings.HasPrefix(lines[2], "Subject: ") || strings.Contains(lines[2], "\n") {
+		t.Fatalf("the payload must stay inside the subject line: %q", lines[2])
 	}
 }
 
