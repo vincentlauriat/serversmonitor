@@ -40,22 +40,37 @@ rather than a wrong one.
 
 ## 4. Delivery must never block or lose an alert
 
-Two properties, in tension, and both required.
+Three properties, and the order they are written in is the order they must hold.
 
-**Never block the evaluator.** `Hub.evaluate` runs on the minute tick and holds no lock a delivery
-should wait on. An SMTP server that hangs for 30 s must not delay the next evaluation, and must not
-delay the *other* channels. Deliveries therefore leave the evaluator through a buffered queue and
-are sent by a worker.
+**The row exists before the first attempt.** `Hub.evaluate` persists the event, then inserts one
+`pending` delivery row per enabled channel, *then* hands the work to the queue. Only the worker moves
+a row to `sent` or `failed`. Writing the row after a successful send would lose every delivery a
+crash interrupts — silently, which is exactly the "was I told?" question §5 exists to answer. This
+ordering is what makes the durable queue of §5 and the in-memory queue here the same queue.
+
+**Never block the evaluator.** `Hub.evaluate` runs on the minute tick. An SMTP server that hangs for
+30 s must not delay the next evaluation, and must not delay the *other* channels. Handing off to the
+queue is a non-blocking send; the worker owns every network call.
 
 **Never lose an alert to a transient failure.** A webhook that returns 503 because the receiver is
 restarting is the normal case, not the exception. Each delivery is retried with backoff — 4
-attempts, roughly 1 s, 5 s, 25 s — and then given up on, with the failure recorded.
+attempts at roughly 1 s, 5 s, 25 s — then marked `failed` with the last error kept.
 
-When the queue is full (a hub that has been unable to reach anything for a long time), the **oldest
-pending delivery is dropped, not the newest**: the newest alert is the one that matters, and the
-drop is counted and logged rather than silent.
+Teams throttles above four requests per second and answers `429`. A `429`, and any `5xx`, is
+retried. A `4xx` that is not `429` is not: a malformed card or a revoked URL will fail identically
+forever, and retrying it only delays the alerts queued behind it.
+
+**When the queue is full, a `resolved` is dropped last.** The plain reading — drop the oldest, keep
+the newest — is right for a threshold that keeps re-firing, and wrong for a recovery: drop the
+`resolved` and the last thing Vincent ever heard about a host is that it broke. So the queue drops
+the oldest `fired` it holds; only if it holds nothing but `resolved` does it drop the oldest of
+those. Either way the row stays in the table, moved to `failed` with the reason `queue full`, so a
+drop is never silent.
 
 ## 5. Deliveries are recorded
+
+A `pending` row is written before the first attempt, as §4 requires; everything below follows from
+that.
 
 A new table, `deliveries`: one row per (event, channel), with its state (`pending`, `sent`,
 `failed`), attempt count, last error and timestamps. Three reasons:
@@ -83,9 +98,35 @@ get it through their own compatibility endpoints, which is their problem, not th
 `title`/`message`/`priority`/`tags` trio is included alongside, because ntfy uses exactly those and
 it costs three fields.
 
-**Teams.** A POST of an Adaptive Card to a workflow URL. Teams retired the old Office 365 connector
-in 2025; the current path is a Power Automate *workflow* webhook that accepts an Adaptive Card
-payload. The URL is configured the same way as the generic webhook; only the body shape differs.
+**Teams.** A POST of an Adaptive Card to a Power Automate *workflow* webhook URL. Microsoft
+disabled Office 365 connectors in Teams between 18 and 22 May 2026, so the old `webhook.office.com`
+URLs are dead; workflow URLs live on `api.powerautomate.com`, `api.powerplatform.com` or
+`flow.microsoft.com`. Verified against Microsoft Learn on 2026-09-18, the body is:
+
+```json
+{
+  "type": "message",
+  "attachments": [{
+    "contentType": "application/vnd.microsoft.card.adaptive",
+    "contentUrl": null,
+    "content": {
+      "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+      "type": "AdaptiveCard",
+      "version": "1.2",
+      "body": [ { "type": "TextBlock", "text": "…" } ]
+    }
+  }]
+}
+```
+
+Two published limits shape the code: a message caps at **28 KB**, and more than **four requests per
+second** is throttled with `429`. Neither is reachable by this hub in normal use, but the 28 KB cap
+is why the card carries a summary and a link rather than a dump of the sample.
+
+**Teams cannot be verified locally.** SMTP has a catcher and the webhook has `httptest`; a workflow
+URL belongs to a real tenant. Lot 2 therefore ships Teams verified only against the payload shape
+above, asserted byte for byte in a test. The first delivery to a real channel is Vincent's to
+confirm, and the plan says so rather than letting a green test imply more than it proves.
 
 ## 7. Configuration lives in the database, not the environment
 
@@ -96,8 +137,11 @@ switch and a **Send a test** button.
 
 The SMTP password is the one secret. It is stored in the database like the rest — the database
 already holds the host tokens and the admin password hash, so it is already the trust boundary —
-and it is **never returned by the API**: reads send back a placeholder, and a write that contains
-the placeholder leaves the stored value alone.
+and it is **never returned by the API**. A read returns `smtp_password_set: true|false` and no
+value at all. A write carries `smtp_password` only when it is being changed; the field absent from
+the request body means *leave it alone*, and an empty string means *clear it*. Sniffing a magic
+placeholder string out of the submitted value was the alternative, and it makes that string
+impossible to use as a real password — a small trap with no upside over one boolean.
 
 ## 8. What lot 2 does not do
 
@@ -108,6 +152,7 @@ the placeholder leaves the stored value alone.
   window, and a window delays the first message, which is the one that matters.
 - **No silence windows.** Muting a host already exists and covers the night-shift case.
 - **No Slack or Discord app.** The generic webhook reaches both.
+- **No delivery of alerts that predate the channel.** Enabling a channel does not replay history.
 
 ## 9. Errors
 
