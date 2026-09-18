@@ -133,6 +133,7 @@ stockés en chaînes RFC 3339 UTC, donc l'ordre lexical est l'ordre chronologiqu
 | `settings` | Clé/valeur : intervalle, rétentions, et toute la configuration des notifications et d'Azure. |
 | `azure_resources` | Une ligne par ressource, telle que le dernier balayage réussi l'a vue. `state` et `deleted_at` sont nullables. |
 | `azure_costs` | Une ligne par (ressource, mois). **Aucune clé étrangère, délibérément.** |
+| `azure_actions` | Une ligne par démarrage, arrêt ou redémarrage, écrite avant l'appel. Un index unique partiel n'en autorise qu'une en vol par ressource. |
 | `azure_sync` | Une ligne par périmètre : le dernier inventaire et la dernière requête de coûts ont-ils abouti, et sinon pourquoi. |
 
 Toutes les tables de séries cascadent depuis `hosts`, et `deliveries` cascade depuis `alert_events`.
@@ -245,11 +246,52 @@ est exigé — lire une souscription entière demanderait une attribution de rô
 souscription que ce hub ne réclame pas. Le secret client ne sort jamais de l'API : les lectures
 n'exposent que `client_secret_set`, et il n'apparaît ni dans un message d'erreur ni dans un journal.
 
-**Rien de tout cela n'a lu une vraie souscription.** Tous les points d'entrée Azure de la suite sont
+**Rien de tout cela n'a lu ni agi sur une vraie souscription.** Tous les points d'entrée Azure de la suite sont
 des serveurs `httptest`. Le tenant interdit de créer une app registration et d'attribuer un rôle : le
 justificatif n'existera donc pas tant qu'un administrateur ne sera pas intervenu une fois. Ce qui *a*
 été vérifié contre le vrai Azure, c'est le chemin d'erreur : un identifiant de tenant volontairement
 faux renvoie `AADSTS900021`, et ce message parvient intact au navigateur, trace id compris.
+
+
+### Actions
+
+Le lot 4 en ajoute trois : démarrer, arrêter, redémarrer, sur `Microsoft.Web/sites`. La sandbox ne
+contient aucune machine virtuelle : des actions VM auraient été livrées intestables. La
+correspondance type → verbe est une table, et le lot 5 y ajoutera les VM comme une ligne, pas comme
+une refonte.
+
+**Reader ne suffit plus.** Chaque action est `Microsoft.Web/sites/start/action` ou une cousine :
+agir exige **Website Contributor** en plus de Reader. Les deux sont demandés d'un coup — un second
+aller-retour par un administrateur du tenant est une seconde attente que personne ne maîtrise.
+
+**La ligne d'action est écrite avant l'appel**, comme une livraison. **Contrairement à une
+livraison, elle n'est jamais rejouée.** Les lignes restées `pending` ou `running` à l'arrêt du hub
+deviennent `interrupted` au démarrage suivant, et y restent. Une alerte perdue est pire qu'un
+doublon, donc les livraisons rejouent ; relancer un `stop` arrêterait peut-être une ressource
+relancée à la main entre-temps, donc les actions non. Le procès-verbal honnête est « personne ne
+sait », et la synchronisation suivante dit ce qui s'est réellement passé.
+
+**Une action ne rejoue que sur throttling.** Le chemin de lecture rejoue 429 *et* 5xx, ce qui est
+juste pour un `GET`. Un 500 sur un `POST …/stop` peut arriver après que l'arrêt a eu lieu : le
+répéter, c'est la même double action que la règle d'interruption refuse, en plus rapide. La
+politique de reprise est donc passée par appel plutôt que tenue dans les options du client : un seul
+`azure.Client` est partagé par les deux balayages et les actions, et muter ses options pour un appel
+serait une course contre un balayage en vol.
+
+**L'état d'après est relu, jamais déduit.** Un arrêt réussi est suivi d'un `GET` typé sur la
+ressource, et ce qu'il renvoie est ce que l'inventaire stocke — `Running` compris, si Azure n'a pas
+encore rattrapé. Une lecture en échec laisse l'état précédent intact et `state_after` à `NULL`.
+Écrire « Stopped » parce qu'un arrêt a été demandé casserait l'invariant de l'intérieur.
+
+**L'URL d'action est construite depuis `arm_id`, pas depuis `id`.** `NormalizeID` met les ids en
+minuscules pour que l'inventaire et les coûts se joignent ; la casse d'origine d'ARM est conservée à
+côté, car construire le chemin depuis la forme minuscule serait un pari sur l'insensibilité à la
+casse de chaque segment d'un chemin ARM — un pari qui ne se tranche qu'à la première action réelle,
+c'est-à-dire au pire moment.
+
+L'identifiant voyage dans le corps de la requête, pas dans le chemin : un id ARM est fait
+essentiellement de slashes, un joker de `ServeMux` (Go 1.22) ne les traverse pas, et le
+pourcent-encoder lierait la route au moment où `net/http` déséchappe le chemin.
 
 ## Le processus hub
 
