@@ -127,7 +127,7 @@ func (h *Hub) syncAzureInventory(ctx context.Context) {
 	now := time.Now().UTC()
 	rows := make([]store.AzureResource, 0, len(rs))
 	for _, r := range rs {
-		rows = append(rows, store.AzureResource{ID: r.ID, Name: r.Name, Type: r.Type,
+		rows = append(rows, store.AzureResource{ID: r.ID, ARMID: r.ARMID, Name: r.Name, Type: r.Type,
 			ResourceGroup: r.ResourceGroup, Location: r.Location, Kind: r.Kind, SKU: r.SKU,
 			State: r.State, ProvisioningState: r.ProvisioningState, Host: r.Host, Tags: r.Tags})
 	}

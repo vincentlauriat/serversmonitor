@@ -238,7 +238,7 @@ func TestSettingsNeverReturnTheSecret(t *testing.T) {
 	resp, _ := r.do(t, "PUT", "/api/v1/azure/settings", map[string]any{
 		"mode": "client_secret", "tenant_id": "t", "client_id": "c",
 		"client_secret": "sh-hunter22", "subscription_id": "s",
-		"resource_groups": []string{"rg-sandbox"},
+		"resource_groups":     []string{"rg-sandbox"},
 		"inventory_every_min": 15, "cost_every_min": 60,
 	})
 	if resp.StatusCode != 204 {

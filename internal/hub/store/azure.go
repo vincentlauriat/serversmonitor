@@ -10,7 +10,10 @@ import (
 // AzureResource is one resource as the last successful sync saw it.
 // State is a pointer: NULL means nobody read it, which is never "stopped".
 type AzureResource struct {
-	ID                string
+	ID string
+	// ARMID is the same id with ARM's own casing, kept because the action URL
+	// is built from it. ID went through NormalizeID and is lowercase.
+	ARMID             string
 	Name              string
 	Type              string
 	ResourceGroup     string
@@ -71,14 +74,15 @@ func (s *Store) ReplaceAzureInventory(groups []string, rs []AzureResource, now t
 		// first_seen is kept from the existing row; last_seen always moves and
 		// deleted_at is cleared, so a recreated resource comes back to life.
 		if _, err := tx.Exec(`INSERT INTO azure_resources
-			(id, name, type, resource_group, location, kind, sku, state, provisioning_state, host, tags, first_seen, last_seen, deleted_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)
+			(id, arm_id, name, type, resource_group, location, kind, sku, state, provisioning_state, host, tags, first_seen, last_seen, deleted_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)
 			ON CONFLICT(id) DO UPDATE SET
+			  arm_id=excluded.arm_id,
 			  name=excluded.name, type=excluded.type, resource_group=excluded.resource_group,
 			  location=excluded.location, kind=excluded.kind, sku=excluded.sku,
 			  state=excluded.state, provisioning_state=excluded.provisioning_state,
 			  host=excluded.host, tags=excluded.tags, last_seen=excluded.last_seen, deleted_at=NULL`,
-			r.ID, r.Name, r.Type, r.ResourceGroup, r.Location, r.Kind, r.SKU, state,
+			r.ID, r.ARMID, r.Name, r.Type, r.ResourceGroup, r.Location, r.Kind, r.SKU, state,
 			r.ProvisioningState, r.Host, string(tags), at, at); err != nil {
 			return err
 		}
@@ -101,7 +105,7 @@ func (s *Store) ReplaceAzureInventory(groups []string, rs []AzureResource, now t
 	return tx.Commit()
 }
 
-const azureResourceCols = `id, name, type, resource_group, location, kind, sku, state,
+const azureResourceCols = `id, arm_id, name, type, resource_group, location, kind, sku, state,
 	provisioning_state, host, tags, first_seen, last_seen, deleted_at`
 
 func (s *Store) ListAzureResources() ([]AzureResource, error) {
@@ -115,7 +119,7 @@ func (s *Store) ListAzureResources() ([]AzureResource, error) {
 		var r AzureResource
 		var state, deleted sql.NullString
 		var tags, first, last string
-		if err := rows.Scan(&r.ID, &r.Name, &r.Type, &r.ResourceGroup, &r.Location, &r.Kind, &r.SKU,
+		if err := rows.Scan(&r.ID, &r.ARMID, &r.Name, &r.Type, &r.ResourceGroup, &r.Location, &r.Kind, &r.SKU,
 			&state, &r.ProvisioningState, &r.Host, &tags, &first, &last, &deleted); err != nil {
 			return nil, err
 		}
