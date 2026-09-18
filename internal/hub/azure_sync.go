@@ -42,6 +42,16 @@ func (h *Hub) ReloadAzure() {
 		}
 	}
 	h.aclient.Store(azure.NewClient(src, azure.Options{Base: h.azureBase}))
+	h.kickAzure()
+}
+
+// kickAzure asks the run loop to sync now. Never blocks: one pending kick is
+// enough, and a reload that waited on the loop would deadlock the save.
+func (h *Hub) kickAzure() {
+	select {
+	case h.akick <- struct{}{}:
+	default:
+	}
 }
 
 func scopeChanged(a, b azure.Config) bool {
@@ -94,7 +104,6 @@ func (h *Hub) syncAzureInventory(ctx context.Context) {
 		return
 	}
 	h.recordAzureSync("inventory", true, "", started)
-	h.bus.Publish("azure", map[string]any{"scope": "inventory", "count": len(rows)})
 }
 
 func (h *Hub) syncAzureCosts(ctx context.Context) {
@@ -124,14 +133,18 @@ func (h *Hub) syncAzureCosts(ctx context.Context) {
 		return
 	}
 	h.recordAzureSync("cost", true, "", started)
-	h.bus.Publish("azure", map[string]any{"scope": "cost", "count": len(rows)})
 }
 
+// recordAzureSync writes the outcome and tells the open pages about it —
+// every outcome, not only the good one. An Azure read can take minutes when the
+// credential endpoint is unreachable, and a page that only learns about
+// successes sits on "no inventory has run yet" for the whole of a failure.
 func (h *Hub) recordAzureSync(scope string, ok bool, msg string, started time.Time) {
 	if err := h.st.SetAzureSync(store.AzureSync{Scope: scope, OK: ok, Message: msg,
 		StartedAt: started, EndedAt: time.Now().UTC()}); err != nil {
 		h.log.Error("record azure sync", "err", err)
 	}
+	h.bus.Publish("azure", map[string]any{"scope": scope, "ok": ok})
 }
 
 // TestAzure acquires a token and runs one catalogue call, returning Azure's own

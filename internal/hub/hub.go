@@ -37,6 +37,10 @@ type Hub struct {
 	acfg      atomic.Pointer[azure.Config]
 	aclient   atomic.Pointer[azure.Client]
 	azureBase string // tests only; empty means the real Azure
+	// akick wakes the run loop when the settings change, so a save syncs now
+	// rather than at the next tick. Buffered and sent to without blocking: a
+	// reload must never wait on a loop that is not running yet.
+	akick chan struct{}
 
 	dispatch *notify.Dispatcher
 	ncfg     atomic.Pointer[notify.Config]
@@ -78,7 +82,8 @@ func New(cfg config.Config, version string, log *slog.Logger) (*Hub, error) {
 	icfg := ingest.DefaultConfig()
 	icfg.IntervalSec = st.SettingInt("agent_interval_sec", 10)
 	agents := ingest.New(st, bus, icfg, log.With("component", "ingest"))
-	h := &Hub{cfg: cfg, log: log, st: st, bus: bus, agents: agents, machine: machine}
+	h := &Hub{cfg: cfg, log: log, st: st, bus: bus, agents: agents, machine: machine,
+		akick: make(chan struct{}, 1)}
 	h.dispatch = notify.NewDispatcher(st, notify.Options{Log: log.With("component", "notify")})
 	h.ReloadNotify()
 	h.ReloadAzure()
@@ -103,6 +108,10 @@ func (h *Hub) Run(ctx context.Context) error {
 	azureCost := time.NewTicker(h.azureInterval("cost"))
 	defer azureInv.Stop()
 	defer azureCost.Stop()
+	select { // drop the kick New's own ReloadAzure left behind
+	case <-h.akick:
+	default:
+	}
 	go func() { // catch up at boot without delaying the first metric tick
 		h.syncAzureInventory(ctx)
 		h.syncAzureCosts(ctx)
@@ -123,6 +132,14 @@ func (h *Hub) Run(ctx context.Context) error {
 			fast.Reset(h.interval())
 		case <-minute.C:
 			h.evaluate()
+		case <-h.akick:
+			// The settings changed. Sync now, and realign both tickers: they
+			// were built with whatever cadence was in force at boot, which for
+			// an integration that was off is one hour.
+			h.syncAzureInventory(ctx)
+			h.syncAzureCosts(ctx)
+			azureInv.Reset(h.azureInterval("inventory"))
+			azureCost.Reset(h.azureInterval("cost"))
 		case <-azureInv.C:
 			h.syncAzureInventory(ctx)
 			azureInv.Reset(h.azureInterval("inventory"))

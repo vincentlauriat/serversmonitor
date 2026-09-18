@@ -261,3 +261,67 @@ func TestCurrentPeriod(t *testing.T) {
 		t.Fatalf("period = %q", got)
 	}
 }
+
+// Saving a configuration must sync now, not at the next tick. Without this the
+// page shows "no inventory has run yet" with an empty table for a quarter of an
+// hour after the user configured Azure — and longer, because the tickers were
+// built at boot with the one-hour cadence an off integration uses, and nothing
+// resets them until they first fire.
+func TestSavingAConfigurationSyncsWithoutWaitingForTheTicker(t *testing.T) {
+	f := newAzureFake(t, "a", "b")
+	h, err := New(config.Config{DataDir: t.TempDir()}, "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { h.Close() })
+	h.azureBase = f.srv.URL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.Run(ctx) //nolint:errcheck // Run returns ctx.Err() on cancel
+
+	// Azure is off at boot, so the tickers are on the one-hour fallback.
+	if err := azure.SaveConfig(h.st, azure.Config{Mode: "client_secret", TenantID: "t",
+		ClientID: "c", ClientSecret: "s", SubscriptionID: "SUB", ResourceGroups: []string{"RG"},
+		InventoryEveryMin: 15, CostEveryMin: 60}); err != nil {
+		t.Fatal(err)
+	}
+	h.ReloadAzure()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if st, _ := h.st.AzureSyncState(); st["inventory"].OK {
+			if rs, _ := h.st.ListAzureResources(); len(rs) == 2 {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	st, _ := h.st.AzureSyncState()
+	rs, _ := h.st.ListAzureResources()
+	t.Fatalf("no inventory within 5s after the save: sync = %+v, rows = %d", st, len(rs))
+}
+
+// A failed sync is the outcome the open pages most need to hear about: an Azure
+// read can take minutes to time out, and a page told only about successes shows
+// "no inventory has run yet" for the whole of it.
+func TestAFailedSyncIsBroadcastToo(t *testing.T) {
+	f := newAzureFake(t, "a")
+	h := azureHub(t, f)
+	events, stop := h.bus.Subscribe()
+	defer stop()
+
+	f.failAfter = 0
+	h.syncAzureInventory(context.Background())
+
+	for {
+		select {
+		case e := <-events:
+			if e.Type == "azure" {
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no azure event after a failed sync")
+		}
+	}
+}
