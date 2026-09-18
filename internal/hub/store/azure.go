@@ -238,3 +238,12 @@ func (s *Store) PurgeAzure() error {
 	}
 	return tx.Commit()
 }
+
+// ExecForTests runs one statement against the database. It exists so a test can
+// break a single table and prove that the read error surfaces instead of being
+// swallowed into an empty result — closing the whole store would make an
+// earlier read fail first and prove nothing about the later one.
+func (s *Store) ExecForTests(query string) error {
+	_, err := s.db.Exec(query)
+	return err
+}

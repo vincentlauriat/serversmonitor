@@ -36,7 +36,6 @@ type azureRow struct {
 type azureTotal struct {
 	Currency string  `json:"currency"`
 	Spent    float64 `json:"spent"`
-	Budget   float64 `json:"budget"` // 0 = none
 }
 
 type syncView struct {
@@ -46,10 +45,14 @@ type syncView struct {
 }
 
 type azureView struct {
-	Mode     string              `json:"mode"`
-	Period   string              `json:"period"`
-	Rows     []azureRow          `json:"rows"`
-	Totals   []azureTotal        `json:"totals"`
+	Mode   string       `json:"mode"`
+	Period string       `json:"period"`
+	Rows   []azureRow   `json:"rows"`
+	Totals []azureTotal `json:"totals"`
+	// Budget is one figure for the whole hub, not one per currency: repeating
+	// it beside each total would claim a budget of 100 in euros and another of
+	// 100 in dollars. 0 means none was set.
+	Budget   float64             `json:"budget"`
 	CostAsOf *time.Time          `json:"cost_as_of"`
 	Sync     map[string]syncView `json:"sync"`
 }
@@ -82,21 +85,21 @@ func (s *server) handleGetAzure(w http.ResponseWriter, r *http.Request, _ store.
 
 	rows := make([]azureRow, 0, len(resources)+len(costs))
 	seen := map[string]bool{}
-	for _, r := range resources {
-		row := azureRow{ID: r.ID, Name: r.Name, Type: r.Type, Group: r.ResourceGroup,
-			Location: r.Location, State: r.State, Host: r.Host, Tags: r.Tags,
-			Deleted: r.DeletedAt != nil}
-		if r.Tags == nil {
+	for _, res := range resources {
+		row := azureRow{ID: res.ID, Name: res.Name, Type: res.Type, Group: res.ResourceGroup,
+			Location: res.Location, State: res.State, Host: res.Host, Tags: res.Tags,
+			Deleted: res.DeletedAt != nil}
+		if res.Tags == nil {
 			row.Tags = map[string]string{}
 		}
-		if c, ok := costByID[r.ID]; ok {
+		if c, ok := costByID[res.ID]; ok {
 			amount := c.Amount
 			row.Cost, row.Currency = &amount, c.Currency
 		}
 		// No cost row means Azure has not reported one. That is not zero, so
 		// Cost stays nil and the table shows a dash.
 		rows = append(rows, row)
-		seen[r.ID] = true
+		seen[res.ID] = true
 	}
 	// A cost row with no inventory row is a resource deleted before this hub
 	// ever looked. Showing it is the difference between a right bill and a
@@ -124,19 +127,23 @@ func (s *server) handleGetAzure(w http.ResponseWriter, r *http.Request, _ store.
 	sort.Strings(currencies)
 	totals := make([]azureTotal, 0, len(currencies))
 	for _, cur := range currencies {
-		// The budget carries no currency of its own; it is read in whichever
-		// currency the cost rows came back in.
-		totals = append(totals, azureTotal{Currency: cur, Spent: spent[cur], Budget: cfg.BudgetMonthly})
+		totals = append(totals, azureTotal{Currency: cur, Spent: spent[cur]})
 	}
 
+	// Failing loudly rather than returning an empty map: the page reads this to
+	// decide what an empty table means, and "I could not read the sync state"
+	// must not arrive looking like "no sync has ever run".
+	st, err := s.Store.AzureSyncState()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	syncs := map[string]syncView{}
-	if st, err := s.Store.AzureSyncState(); err == nil {
-		for k, v := range st {
-			syncs[k] = syncView{OK: v.OK, Message: v.Message, At: v.EndedAt}
-		}
+	for k, v := range st {
+		syncs[k] = syncView{OK: v.OK, Message: v.Message, At: v.EndedAt}
 	}
 	writeJSON(w, http.StatusOK, azureView{Mode: cfg.Mode, Period: period, Rows: rows,
-		Totals: totals, CostAsOf: costAsOf, Sync: syncs})
+		Totals: totals, Budget: cfg.BudgetMonthly, CostAsOf: costAsOf, Sync: syncs})
 }
 
 // lastSegment stands in for a name when a cost row has no inventory row,
@@ -148,6 +155,9 @@ func lastSegment(id string) string {
 	return id
 }
 
+// typeFromID returns the type in the casing the id carries, which is the
+// lowercase one NormalizeID imposed. Azure's own casing is only in the
+// inventory row, and an orphan has none by definition.
 func typeFromID(id string) string {
 	parts := strings.Split(strings.Trim(id, "/"), "/")
 	for i, p := range parts {

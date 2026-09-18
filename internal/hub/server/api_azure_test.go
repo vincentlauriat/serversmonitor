@@ -388,3 +388,54 @@ func TestAzureEndpointsNeedASession(t *testing.T) {
 	}
 	_ = time.Now
 }
+
+// The budget is one figure for the hub. Repeated beside each currency total it
+// would read as a budget of 100 euros and a separate budget of 100 dollars —
+// the same silently-wrong number the totals themselves refuse to produce.
+func TestBudgetIsReportedOnceNotPerCurrency(t *testing.T) {
+	r := newAzureRig(t)
+	if resp, data := r.do(t, "PUT", "/api/v1/azure/settings", map[string]any{
+		"mode": "managed_identity", "subscription_id": "s",
+		"resource_groups": []string{"rg-sandbox"}, "budget_monthly": 100.0}); resp.StatusCode != 204 {
+		t.Fatalf("PUT = %d %s", resp.StatusCode, data)
+	}
+	if err := r.st.UpsertAzureCosts([]store.AzureCost{
+		{ResourceID: "a", Period: "2026-09", Amount: 12, Currency: "EUR", AsOf: r.now},
+		{ResourceID: "b", Period: "2026-09", Amount: 3, Currency: "USD", AsOf: r.now},
+		{ResourceID: "c", Period: "2026-09", Amount: 1, Currency: "CHF", AsOf: r.now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, data := r.do(t, "GET", "/api/v1/azure?period=2026-09", nil)
+	var raw struct {
+		Budget float64          `json:"budget"`
+		Totals []map[string]any `json:"totals"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw.Budget != 100 {
+		t.Fatalf("budget = %v, want 100 at the top level", raw.Budget)
+	}
+	if len(raw.Totals) != 3 {
+		t.Fatalf("totals = %d, want three currencies", len(raw.Totals))
+	}
+	for _, tt := range raw.Totals {
+		if _, present := tt["budget"]; present {
+			t.Fatalf("a per-currency total carries a budget: %v", tt)
+		}
+	}
+}
+
+// A sync state that cannot be read is not a sync that never ran. The page reads
+// this field to decide what an empty table means.
+func TestUnreadableSyncStateIsAnErrorNotAnEmptyMap(t *testing.T) {
+	r := newAzureRig(t)
+	if err := r.st.ExecForTests("DROP TABLE azure_sync"); err != nil {
+		t.Fatal(err)
+	}
+	resp, data := r.do(t, "GET", "/api/v1/azure", nil)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("GET = %d %s, want 500", resp.StatusCode, data)
+	}
+}
