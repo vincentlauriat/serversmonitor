@@ -2739,7 +2739,10 @@ func newAzureFake(t *testing.T, sites ...string) *azureFake {
 			fmt.Fprintf(w, `{"value":[%s]}`, strings.Join(parts, ","))
 		case strings.Contains(r.URL.Path, "/Microsoft.Web/serverfarms"):
 			io.WriteString(w, `{"value":[]}`)
-		case strings.Contains(r.URL.Path, "/CostManagement/query"):
+		// The real path is ".../providers/Microsoft.CostManagement/query", so the
+		// character before CostManagement is a dot, not a slash. Matching
+		// "/CostManagement/query" answers 404 and the sync reads as broken.
+		case strings.Contains(r.URL.Path, "CostManagement/query"):
 			io.WriteString(w, `{"properties":{"columns":[{"name":"Cost"},{"name":"ResourceId"},{"name":"Currency"}],
 			 "rows":[[3.5,"/subscriptions/sub/resourcegroups/rg/providers/microsoft.web/sites/a","EUR"],
 			         [9.0,"/subscriptions/sub/resourcegroups/rg/providers/microsoft.insights/components/long-gone","EUR"]]}}`)

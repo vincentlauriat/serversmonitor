@@ -29,6 +29,7 @@ type Deps struct {
 	Agents        AgentHandler
 	Bus           *Broadcaster
 	Notify        Notifier
+	Azure         Azurer
 	Static        fs.FS
 	InstallScript []byte
 	Now           func() time.Time

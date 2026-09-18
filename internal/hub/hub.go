@@ -12,6 +12,7 @@ import (
 
 	"github.com/vincentlauriat/serversmonitor/deploy"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/alerts"
+	"github.com/vincentlauriat/serversmonitor/internal/hub/azure"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/config"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/ingest"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/notify"
@@ -31,6 +32,12 @@ type Hub struct {
 
 	// Notification state. An atomic pointer rather than a mutex: the settings
 	// handler swaps the whole configuration, the evaluator only ever reads it.
+	// Azure state, same shape as the notification configuration: the settings
+	// handler swaps the whole thing, the sync only ever reads it.
+	acfg      atomic.Pointer[azure.Config]
+	aclient   atomic.Pointer[azure.Client]
+	azureBase string // tests only; empty means the real Azure
+
 	dispatch *notify.Dispatcher
 	ncfg     atomic.Pointer[notify.Config]
 	channels atomic.Pointer[[]notify.Channel]
@@ -74,7 +81,8 @@ func New(cfg config.Config, version string, log *slog.Logger) (*Hub, error) {
 	h := &Hub{cfg: cfg, log: log, st: st, bus: bus, agents: agents, machine: machine}
 	h.dispatch = notify.NewDispatcher(st, notify.Options{Log: log.With("component", "notify")})
 	h.ReloadNotify()
-	h.handler = server.New(server.Deps{Store: st, Agents: agents, Bus: bus, Notify: h, Static: webdist.Build(), InstallScript: deploy.InstallScript,
+	h.ReloadAzure()
+	h.handler = server.New(server.Deps{Store: st, Agents: agents, Bus: bus, Notify: h, Azure: h, Static: webdist.Build(), InstallScript: deploy.InstallScript,
 		Version: version, Log: log.With("component", "server"), Secure: cfg.Secure})
 	return h, nil
 }
@@ -91,6 +99,14 @@ func (h *Hub) interval() time.Duration {
 func (h *Hub) Run(ctx context.Context) error {
 	h.dispatch.Start(ctx)
 	h.replayPendingDeliveries()
+	azureInv := time.NewTicker(h.azureInterval("inventory"))
+	azureCost := time.NewTicker(h.azureInterval("cost"))
+	defer azureInv.Stop()
+	defer azureCost.Stop()
+	go func() { // catch up at boot without delaying the first metric tick
+		h.syncAzureInventory(ctx)
+		h.syncAzureCosts(ctx)
+	}()
 	fast := time.NewTicker(h.interval())
 	minute := time.NewTicker(time.Minute)
 	hour := time.NewTicker(time.Hour)
@@ -107,6 +123,12 @@ func (h *Hub) Run(ctx context.Context) error {
 			fast.Reset(h.interval())
 		case <-minute.C:
 			h.evaluate()
+		case <-azureInv.C:
+			h.syncAzureInventory(ctx)
+			azureInv.Reset(h.azureInterval("inventory"))
+		case <-azureCost.C:
+			h.syncAzureCosts(ctx)
+			azureCost.Reset(h.azureInterval("cost"))
 		case <-hour.C:
 			h.hourly()
 		}
