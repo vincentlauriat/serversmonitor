@@ -2,16 +2,17 @@ package hub
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/vincentlauriat/serversmonitor/internal/hub/azure"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 )
 
+// Aliases: the sentinels live in the azure package so the HTTP layer can map
+// them without importing the hub.
 var (
-	ErrAzureOff      = errors.New("hub: Azure is not configured")
-	ErrNotActionable = errors.New("hub: this resource type has no actions")
+	ErrAzureOff      = azure.ErrNotConfigured
+	ErrNotActionable = azure.ErrNotActionable
 )
 
 // StartAction records the action, then runs it off the caller's request. It

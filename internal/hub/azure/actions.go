@@ -3,6 +3,7 @@ package azure
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -13,6 +14,14 @@ import (
 // the state read-back share it on purpose: they talk to the same provider, and
 // two versions drifting apart is a bug waiting for a Tuesday.
 const webAPIVersion = "2023-12-01"
+
+// The two refusals a caller has to tell apart from a real Azure failure. They
+// live here because the hub raises them and the HTTP layer maps them, and the
+// HTTP layer cannot import the hub.
+var (
+	ErrNotConfigured = errors.New("azure: not configured")
+	ErrNotActionable = errors.New("azure: this resource type has no actions")
+)
 
 type Action string
 
@@ -47,7 +56,7 @@ func Supports(resourceType string, a Action) bool {
 func Do(ctx context.Context, c *Client, armID, resourceType string, a Action) error {
 	verb, ok := Actionable[strings.ToLower(resourceType)][a]
 	if !ok {
-		return fmt.Errorf("azure: %s cannot be asked to %s", resourceType, a)
+		return fmt.Errorf("%w: %s cannot be asked to %s", ErrNotActionable, resourceType, a)
 	}
 	_, err := c.PostAction(ctx, armID+"/"+verb, url.Values{"api-version": {webAPIVersion}})
 	return err

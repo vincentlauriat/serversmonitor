@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -17,6 +18,9 @@ import (
 type Azurer interface {
 	ReloadAzure()
 	TestAzure(ctx context.Context) error
+	// StartAction records the action and runs it off this request, returning
+	// the id of the row it wrote.
+	StartAction(resourceID string, action azure.Action) (int64, error)
 }
 
 type azureRow struct {
@@ -269,4 +273,85 @@ func (s *server) handleTestAzure(w http.ResponseWriter, r *http.Request, _ store
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type azureActionInput struct {
+	ResourceID string `json:"resource_id"`
+	Action     string `json:"action"`
+}
+
+// handleStartAzureAction accepts an action and answers immediately. The
+// resource id travels in the body rather than the path: an ARM id is mostly
+// slashes, a ServeMux wildcard does not match one, and percent-encoding it
+// would make the route depend on when net/http unescapes the path.
+func (s *server) handleStartAzureAction(w http.ResponseWriter, r *http.Request, _ store.User) {
+	var in azureActionInput
+	if err := readJSON(w, r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	// Vet the verb here: an action the hub does not know must not travel any
+	// further towards ARM.
+	a := azure.Action(in.Action)
+	switch a {
+	case azure.ActionStart, azure.ActionStop, azure.ActionRestart:
+	default:
+		writeErr(w, http.StatusBadRequest, "unknown action")
+		return
+	}
+	if strings.TrimSpace(in.ResourceID) == "" {
+		writeErr(w, http.StatusBadRequest, "resource_id is required")
+		return
+	}
+
+	id, err := s.Azure.StartAction(in.ResourceID, a)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusAccepted, map[string]any{"action_id": id})
+	case errors.Is(err, store.ErrNoSuchResource):
+		// Outside the configured scope, or deleted. Same answer either way: the
+		// hub does not act on a resource it cannot show.
+		writeErr(w, http.StatusNotFound, "no such resource")
+	case errors.Is(err, store.ErrActionInFlight):
+		writeErr(w, http.StatusConflict, "an action is already running on this resource")
+	case errors.Is(err, azure.ErrNotConfigured):
+		writeErr(w, http.StatusBadRequest, "Azure is not configured")
+	case errors.Is(err, azure.ErrNotActionable):
+		writeErr(w, http.StatusBadRequest, "this resource type has no actions")
+	default:
+		writeErr(w, http.StatusInternalServerError, err.Error())
+	}
+}
+
+type azureActionView struct {
+	ID           int64   `json:"id"`
+	ResourceID   string  `json:"resource_id"`
+	ResourceName string  `json:"resource_name"`
+	Action       string  `json:"action"`
+	Status       string  `json:"status"`
+	RequestedAt  string  `json:"requested_at"`
+	FinishedAt   *string `json:"finished_at"`
+	Error        string  `json:"error"`
+	StateBefore  *string `json:"state_before"`
+	StateAfter   *string `json:"state_after"`
+}
+
+func (s *server) handleAzureActions(w http.ResponseWriter, r *http.Request, _ store.User) {
+	as, err := s.Store.ListAzureActions(20)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]azureActionView, 0, len(as))
+	for _, a := range as {
+		v := azureActionView{ID: a.ID, ResourceID: a.ResourceID, ResourceName: a.ResourceName,
+			Action: a.Action, Status: a.Status, RequestedAt: a.RequestedAt.Format(time.RFC3339),
+			Error: a.Error, StateBefore: a.StateBefore, StateAfter: a.StateAfter}
+		if a.FinishedAt != nil {
+			f := a.FinishedAt.Format(time.RFC3339)
+			v.FinishedAt = &f
+		}
+		out = append(out, v)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"actions": out})
 }
