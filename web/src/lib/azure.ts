@@ -86,3 +86,61 @@ export function toSettingsPayload(
   if (secret !== null) out.client_secret = secret;
   return out;
 }
+
+/** One start, stop or restart, as the action log records it. */
+export interface AzureAction {
+  id: number;
+  resource_id: string;
+  resource_name: string;
+  action: string;
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'interrupted';
+  requested_at: string;
+  finished_at: string | null;
+  error: string;
+  state_before: string | null;
+  state_after: string | null;
+}
+
+/**
+ * The actions a resource type accepts. Empty for a type the hub has no verbs
+ * for — showing three buttons that all answer 400 would be worse than showing
+ * none. Kept in step with azure.Actionable on the Go side, deliberately by
+ * hand: two short lists that disagree are visible, a generated one is not.
+ */
+export function actionsFor(resourceType: string): string[] {
+  return resourceType.toLowerCase() === 'microsoft.web/sites'
+    ? ['start', 'stop', 'restart']
+    : [];
+}
+
+/** True while this resource has an action the hub has not finished. */
+export function isInFlight(resourceID: string, actions: AzureAction[]): boolean {
+  return actions.some(
+    (a) => a.resource_id === resourceID && (a.status === 'pending' || a.status === 'running')
+  );
+}
+
+/**
+ * What the log says happened. An interrupted action is the honest one: the hub
+ * died mid-flight and never replayed it, so nobody knows whether Azure acted.
+ */
+export function actionOutcome(a: AzureAction): string {
+  switch (a.status) {
+    case 'pending':
+    case 'running':
+      return 'in progress';
+    case 'succeeded':
+      return a.state_after ? `now ${a.state_after}` : 'done, state not read back';
+    case 'failed':
+      return a.error || 'failed';
+    case 'interrupted':
+      return 'the hub stopped mid-action; it was not replayed';
+    default:
+      return a.status;
+  }
+}
+
+/** Stopping or restarting takes a running site offline; starting one cannot. */
+export function needsConfirmation(action: string): boolean {
+  return action === 'stop' || action === 'restart';
+}

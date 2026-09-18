@@ -133,6 +133,7 @@ lexical order is chronological order.
 | `azure_resources` | One row per resource, as the last successful sweep saw it. `state` and `deleted_at` are nullable. |
 | `azure_costs` | One row per (resource, month). **No foreign key, deliberately.** |
 | `azure_sync` | One row per scope: whether the last inventory and the last cost query worked, and why not. |
+| `azure_actions` | One row per start, stop or restart, written before the call. A partial unique index allows one in flight per resource. |
 
 Every series table cascades from `hosts`, and `deliveries` cascades from `alert_events`. Deleting a
 host removes everything about it in one statement.
@@ -238,11 +239,48 @@ required — reading a whole subscription needs a subscription-scope role assign
 ask for. The client secret never leaves the API: reads expose `client_secret_set` only, and it never
 appears in an error message or a log.
 
-**Nothing here has read a real subscription.** Every Azure endpoint in the suite is an `httptest`
+**Nothing here has read or acted on a real subscription.** Every Azure endpoint in the suite is an `httptest`
 server. The tenant forbids creating an app registration and assigning a role, so the credential does
 not exist until an administrator acts once. What *has* been checked against real Azure is the error
 path: a deliberately wrong tenant id returns `AADSTS900021` and that message reaches the browser
 intact, trace id included.
+
+
+### Actions
+
+Lot 4 adds three: start, stop and restart, on `Microsoft.Web/sites`. The sandbox holds no virtual
+machine, so VM actions would have shipped untestable; the type-to-verb mapping is a table, and lot 5
+adds VMs as a row rather than as a rewrite.
+
+**Reader is no longer enough.** Every action is `Microsoft.Web/sites/start/action` or a sibling, so
+acting needs **Website Contributor** on top of Reader. Both are asked for at once: a second round
+trip through a tenant administrator is a second wait nobody controls.
+
+**The action row is written before the call**, as a delivery is. **Unlike a delivery, it is never
+replayed.** Rows left `pending` or `running` when the hub stops become `interrupted` at the next
+start, and stay there. A lost alert is worse than a duplicate one, so deliveries replay; re-firing a
+stop could stop a resource restarted by hand in the meantime, so actions do not. The honest record
+is "nobody knows", and the next inventory sync says what actually happened.
+
+**An action retries throttling only.** The read path retries 429 *and* 5xx, which is right for a
+`GET`. A 500 on a `POST …/stop` may land after the stop happened, so repeating it is the same
+double-action that the interrupted rule refuses, only faster. The retry policy is therefore passed
+per call rather than held in the client's options: one `azure.Client` is shared by both sweeps and
+the actions, and mutating its options for one call would race a sweep in flight.
+
+**The state afterwards is read back, never inferred.** A successful stop is followed by one typed
+`GET` on the resource, and whatever it returns is what the inventory stores — `Running` included, if
+Azure has not caught up. A read that fails leaves the previous state untouched and `state_after`
+`NULL`. Writing "Stopped" because a stop was asked for would break the invariant from the inside.
+
+**The action URL is built from `arm_id`, not from `id`.** `NormalizeID` lowercases ids so inventory
+and cost rows join; ARM's own casing is kept alongside, because building the request path from the
+lowercased form would be a bet on every ARM path segment being case-insensitive — a bet that could
+only be settled on the first real action, which is the worst possible moment.
+
+The id travels in the request body rather than the path: an ARM id is mostly slashes, a Go 1.22
+`ServeMux` wildcard does not match one, and percent-encoding it would tie the route to when
+`net/http` unescapes a path.
 
 ## The hub process
 

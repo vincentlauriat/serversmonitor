@@ -12,7 +12,10 @@ import (
 // Resource is one Azure resource as ServersMonitor stores it.
 // State is a pointer: nil means nobody read it, which is never "stopped".
 type Resource struct {
-	ID                string
+	ID string
+	// ARMID is the same id with ARM's own casing. The action URL is built from
+	// it; ID is lowercased and is only a join key.
+	ARMID             string
 	Name              string
 	Type              string
 	ResourceGroup     string
@@ -93,7 +96,7 @@ func Inventory(ctx context.Context, c *Client, subscription string, groups []str
 				return nil, fmt.Errorf("catalogue entry in %s: %w", g, err)
 			}
 			id := NormalizeID(a.ID)
-			r := &Resource{ID: id, Name: a.Name, Type: a.Type, Location: a.Location,
+			r := &Resource{ID: id, ARMID: strings.TrimSpace(a.ID), Name: a.Name, Type: a.Type, Location: a.Location,
 				Kind: a.Kind, SKU: a.SKU.Name, Tags: a.Tags, ResourceGroup: resourceGroupOf(a.ID)}
 			if r.ResourceGroup == "" {
 				r.ResourceGroup = g
