@@ -1,9 +1,23 @@
 # Getting started
 
+> **Nothing is published yet.** There is no `serversmonitor/hub` image on Docker Hub and no binary
+> on a GitHub releases page. Build both locally as shown below. Every command on this page that
+> names a published artefact is marked.
+
 ## 1. Run the hub
 
+Build the image once, then run it:
+
 ```
+docker build -f deploy/Dockerfile -t serversmonitor/hub .
 docker run -d --name smhub -p 8090:8090 -v smhub-data:/data serversmonitor/hub
+```
+
+Or without Docker at all:
+
+```
+make web build
+SM_DATA_DIR=./data ./bin/smhub
 ```
 
 Open <http://localhost:8090> and create the admin account. That account is the only one.
@@ -19,6 +33,17 @@ Settings → Hosts → **Add host**. Copy the command shown once, run it on the 
 
 ```
 curl -fsSL https://hub.example/install.sh | sudo sh -s -- --hub wss://hub.example --token <token>
+```
+
+**Until a release is published, that script cannot download the binary.** It defaults to a GitHub
+releases URL that does not exist yet, so give it one that does — either point `--url` at a directory
+where you put the output of `make release`, or copy the binary over yourself and write the service
+file by hand:
+
+```
+# on the target machine, with smagent-linux-arm64 already copied to /usr/local/bin/smagent
+sudo install -m 755 smagent-linux-arm64 /usr/local/bin/smagent
+curl -fsSL http://hub.example/install.sh | sudo sh -s -- --hub ws://hub.example --token <token> --url file:///tmp
 ```
 
 Linux gets a systemd unit (`smagent.service`), macOS a LaunchDaemon. Docker container metrics

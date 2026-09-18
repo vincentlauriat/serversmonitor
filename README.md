@@ -40,12 +40,16 @@ it had resolves itself at the worst possible moment.
 
 ## Quick start
 
+Nothing is published yet — no Docker Hub image, no GitHub release. Build it:
+
 ```
+docker build -f deploy/Dockerfile -t serversmonitor/hub .
 docker run -d --name smhub -p 8090:8090 -v smhub-data:/data serversmonitor/hub
 ```
 
 Open <http://localhost:8090>, create the admin account, add a host, and run the command it gives you
-on the machine you want to watch. See [docs/getting-started.md](docs/getting-started.md).
+on the machine you want to watch. See [docs/getting-started.md](docs/getting-started.md), which also
+covers installing the agent while there is no release to download it from.
 
 ## Build from source
 

@@ -214,6 +214,15 @@ triggers nothing: it was never seen, so it cannot have disappeared.
 rule nor any threshold. Muting a laptop that is switched off every evening and would otherwise
 also trip a disk rule while idle has to silence the host, not just one of its rules.
 
+**What is *shown* as firing is filtered, what is *logged* is not.** Two cases leave a `fired` row
+that can never get its matching `resolved`: a host muted while one of its rules was firing (the
+evaluator skips it from then on), and a rule deleted while firing (nothing is left to resolve it).
+Both were reproduced against a running hub: the badge stayed lit forever. The display therefore
+drops a firing event whose host is muted or whose rule no longer exists, while the append-only log
+keeps it. Writing a synthetic `resolved` instead would make the log claim something that never
+happened, and un-muting a host would have to invent a second `fired`. Filtering at the edge keeps
+one honest record and one correct badge.
+
 **Silence ≠ zero.** The evaluator only reads samples newer than 2 intervals. A host without a
 fresh sample is evaluated by the `status` rule only, never by thresholds; otherwise a stopped agent
 would resolve every CPU alert to `ok` while nothing is known. Dedicated test.

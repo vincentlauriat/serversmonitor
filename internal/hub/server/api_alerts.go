@@ -55,7 +55,7 @@ func toEventViews(evs []store.AlertEvent, names map[int64]string) []eventView {
 }
 
 func (s *server) handleAlerts(w http.ResponseWriter, r *http.Request, _ store.User) {
-	last, err := s.Store.LastEventPerKey()
+	firing, err := s.firingEvents()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -64,12 +64,6 @@ func (s *server) handleAlerts(w http.ResponseWriter, r *http.Request, _ store.Us
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	var firing []store.AlertEvent
-	for _, e := range last {
-		if e.Kind == "fired" {
-			firing = append(firing, e)
-		}
 	}
 	rules, err := s.Store.ListRules()
 	if err != nil {

@@ -94,6 +94,18 @@ func (r *rig) newHost(t *testing.T, name string) (int64, string) {
 	return created.Host.ID, created.Token
 }
 
+// newRule creates a real rule: an alert event whose rule no longer exists is
+// deliberately filtered out of the firing set, so a test that fakes a rule id
+// would prove nothing.
+func (r *rig) newRule(t *testing.T, hostID *int64, metric string) int64 {
+	t.Helper()
+	rule, err := r.st.CreateRule(store.Rule{HostID: hostID, Metric: metric, Threshold: 90}, r.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rule.ID
+}
+
 func TestSetupThenLoginFlow(t *testing.T) {
 	r := newRig(t)
 	resp, data := r.do(t, "GET", "/api/v1/me", nil)
@@ -217,9 +229,11 @@ func TestHostFiringCountIsReported(t *testing.T) {
 	r := newRig(t)
 	r.setupAndLogin(t)
 	id, _ := r.newHost(t, "pi")
-	r.st.InsertAlertEvent(store.AlertEvent{RuleID: 1, HostID: id, Metric: "cpu", Kind: "fired", Value: 95, At: r.now})
-	r.st.InsertAlertEvent(store.AlertEvent{RuleID: 2, HostID: id, Metric: "disk", Kind: "fired", Value: 95, At: r.now})
-	r.st.InsertAlertEvent(store.AlertEvent{RuleID: 2, HostID: id, Metric: "disk", Kind: "resolved", Value: 10, At: r.now.Add(time.Minute)})
+	cpuRule := r.newRule(t, &id, "cpu")
+	diskRule := r.newRule(t, &id, "disk")
+	r.st.InsertAlertEvent(store.AlertEvent{RuleID: cpuRule, HostID: id, Metric: "cpu", Kind: "fired", Value: 95, At: r.now})
+	r.st.InsertAlertEvent(store.AlertEvent{RuleID: diskRule, HostID: id, Metric: "disk", Kind: "fired", Value: 95, At: r.now})
+	r.st.InsertAlertEvent(store.AlertEvent{RuleID: diskRule, HostID: id, Metric: "disk", Kind: "resolved", Value: 10, At: r.now.Add(time.Minute)})
 	_, data := r.do(t, "GET", "/api/v1/hosts/"+itoa(id), nil)
 	var h map[string]any
 	json.Unmarshal(data, &h)
@@ -246,7 +260,11 @@ func TestAlertsRulesAndEvents(t *testing.T) {
 	r.setupAndLogin(t)
 	r.st.SeedDefaultRules(r.now)
 	id, _ := r.newHost(t, "pi")
-	r.st.InsertAlertEvent(store.AlertEvent{RuleID: 1, HostID: id, Metric: "cpu", Kind: "fired", Value: 95, At: r.now})
+	seeded, err := r.st.ListRules()
+	if err != nil || len(seeded) == 0 {
+		t.Fatalf("seed = %v %v", seeded, err)
+	}
+	r.st.InsertAlertEvent(store.AlertEvent{RuleID: seeded[0].ID, HostID: id, Metric: "cpu", Kind: "fired", Value: 95, At: r.now})
 	resp, data := r.do(t, "GET", "/api/v1/alerts", nil)
 	if resp.StatusCode != 200 || !strings.Contains(string(data), `"host_name":"pi"`) || !strings.Contains(string(data), `"metric":"cpu"`) {
 		t.Fatalf("alerts = %d %s", resp.StatusCode, data)
@@ -374,5 +392,94 @@ func TestStaticAndInstallScript(t *testing.T) {
 	}
 	if resp, _ := r.do(t, "GET", "/agent/ws", nil); resp.StatusCode != 418 {
 		t.Fatalf("agent route = %d", resp.StatusCode)
+	}
+}
+
+// A muted host and a deleted rule both leave a "fired" row that can never be
+// resolved: the evaluator skips a muted host entirely, and a deleted rule has
+// nothing left to resolve it. The badge must not stay lit forever.
+func TestMutedHostStopsCountingAsFiring(t *testing.T) {
+	r := newRig(t)
+	r.setupAndLogin(t)
+	id, _ := r.newHost(t, "pi")
+	rule := r.newRule(t, &id, "cpu")
+	r.st.InsertAlertEvent(store.AlertEvent{RuleID: rule, HostID: id, Metric: "cpu", Kind: "fired", Value: 95, At: r.now})
+	_, data := r.do(t, "GET", "/api/v1/hosts/"+itoa(id), nil)
+	var h map[string]any
+	json.Unmarshal(data, &h)
+	if h["firing"] != 1.0 {
+		t.Fatalf("firing before muting = %v, want 1", h["firing"])
+	}
+	if resp, _ := r.do(t, "PATCH", "/api/v1/hosts/"+itoa(id), map[string]any{"muted": true}); resp.StatusCode != 200 {
+		t.Fatalf("mute = %d", resp.StatusCode)
+	}
+	_, data = r.do(t, "GET", "/api/v1/hosts/"+itoa(id), nil)
+	json.Unmarshal(data, &h)
+	if h["firing"] != 0.0 {
+		t.Fatalf("a muted host must show no firing alert, got %v", h["firing"])
+	}
+	_, data = r.do(t, "GET", "/api/v1/alerts", nil)
+	var alerts struct {
+		Firing []map[string]any `json:"firing"`
+	}
+	json.Unmarshal(data, &alerts)
+	if len(alerts.Firing) != 0 {
+		t.Fatalf("the alerts page must not list a muted host: %v", alerts.Firing)
+	}
+	// Unmuting brings it back: the log was never rewritten.
+	r.do(t, "PATCH", "/api/v1/hosts/"+itoa(id), map[string]any{"muted": false})
+	_, data = r.do(t, "GET", "/api/v1/hosts/"+itoa(id), nil)
+	json.Unmarshal(data, &h)
+	if h["firing"] != 1.0 {
+		t.Fatalf("unmuting must restore the alert, got %v", h["firing"])
+	}
+}
+
+func TestDeletedRuleStopsCountingAsFiring(t *testing.T) {
+	r := newRig(t)
+	r.setupAndLogin(t)
+	id, _ := r.newHost(t, "pi")
+	resp, data := r.do(t, "POST", "/api/v1/alerts/rules", map[string]any{"host_id": id, "metric": "cpu", "threshold": 1, "duration_sec": 0})
+	if resp.StatusCode != 201 {
+		t.Fatalf("create rule = %d", resp.StatusCode)
+	}
+	var rule struct {
+		ID int64 `json:"id"`
+	}
+	json.Unmarshal(data, &rule)
+	r.st.InsertAlertEvent(store.AlertEvent{RuleID: rule.ID, HostID: id, Metric: "cpu", Kind: "fired", Value: 95, At: r.now})
+	var h map[string]any
+	_, data = r.do(t, "GET", "/api/v1/hosts/"+itoa(id), nil)
+	json.Unmarshal(data, &h)
+	if h["firing"] != 1.0 {
+		t.Fatalf("firing before delete = %v", h["firing"])
+	}
+	if resp, _ := r.do(t, "DELETE", "/api/v1/alerts/rules/"+itoa(rule.ID), nil); resp.StatusCode != 204 {
+		t.Fatalf("delete rule = %d", resp.StatusCode)
+	}
+	_, data = r.do(t, "GET", "/api/v1/hosts/"+itoa(id), nil)
+	json.Unmarshal(data, &h)
+	if h["firing"] != 0.0 {
+		t.Fatalf("a deleted rule must stop counting, got %v", h["firing"])
+	}
+	// The log itself keeps the event: it says what really happened.
+	_, data = r.do(t, "GET", "/api/v1/alerts/events", nil)
+	if !strings.Contains(string(data), `"kind":"fired"`) {
+		t.Fatalf("the append-only log must keep the event: %s", data)
+	}
+}
+
+func TestOfflineAlertSurvivesTheLiveRuleCheck(t *testing.T) {
+	// The implicit offline rule has id 0 and no row in alert_rules; the filter
+	// must not treat it as deleted.
+	r := newRig(t)
+	r.setupAndLogin(t)
+	id, _ := r.newHost(t, "pi")
+	r.st.InsertAlertEvent(store.AlertEvent{RuleID: 0, HostID: id, Metric: "status", Kind: "fired", Value: 1, At: r.now})
+	_, data := r.do(t, "GET", "/api/v1/hosts/"+itoa(id), nil)
+	var h map[string]any
+	json.Unmarshal(data, &h)
+	if h["firing"] != 1.0 {
+		t.Fatalf("the offline alert must count, got %v", h["firing"])
 	}
 }

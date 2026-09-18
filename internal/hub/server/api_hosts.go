@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vincentlauriat/serversmonitor/internal/hub/alerts"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 	"github.com/vincentlauriat/serversmonitor/internal/proto"
 )
@@ -71,18 +72,53 @@ func (s *server) connectedSet() map[int64]bool {
 	return out
 }
 
-// firingCounts derives the currently firing alerts per host from the last
-// event of each (rule, host) pair.
-func (s *server) firingCounts() (map[int64]int, error) {
+// firingEvents returns the alerts that are firing *and still meaningful*.
+//
+// The event log is append-only and honest about what happened, so it keeps a
+// "fired" row for two cases that can never produce a matching "resolved":
+// a host muted while one of its rules was firing (the evaluator skips it
+// entirely from then on), and a rule deleted while firing (nothing is left to
+// resolve it). Filtering here rather than writing a synthetic "resolved" keeps
+// the log truthful and the badge correct.
+func (s *server) firingEvents() ([]store.AlertEvent, error) {
 	last, err := s.Store.LastEventPerKey()
 	if err != nil {
 		return nil, err
 	}
-	out := map[int64]int{}
+	hosts, err := s.Store.ListHosts()
+	if err != nil {
+		return nil, err
+	}
+	muted := map[int64]bool{}
+	for _, h := range hosts {
+		muted[h.ID] = h.Muted
+	}
+	rules, err := s.Store.ListRules()
+	if err != nil {
+		return nil, err
+	}
+	live := map[int64]bool{alerts.StatusRuleID: true} // the offline rule has no row
+	for _, r := range rules {
+		live[r.ID] = true
+	}
+	var out []store.AlertEvent
 	for _, e := range last {
-		if e.Kind == "fired" {
-			out[e.HostID]++
+		if e.Kind != "fired" || muted[e.HostID] || !live[e.RuleID] {
+			continue
 		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+func (s *server) firingCounts() (map[int64]int, error) {
+	firing, err := s.firingEvents()
+	if err != nil {
+		return nil, err
+	}
+	out := map[int64]int{}
+	for _, e := range firing {
+		out[e.HostID]++
 	}
 	return out, nil
 }
