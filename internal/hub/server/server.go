@@ -83,6 +83,11 @@ func New(d Deps) http.Handler {
 	mux.Handle("POST /api/v1/notifications/test", s.auth(s.handleTestNotification))
 	mux.Handle("GET /api/v1/notifications/deliveries", s.auth(s.handleDeliveries))
 
+	mux.Handle("GET /api/v1/azure", s.auth(s.handleGetAzure))
+	mux.Handle("GET /api/v1/azure/settings", s.auth(s.handleGetAzureSettings))
+	mux.Handle("PUT /api/v1/azure/settings", s.auth(s.handlePutAzureSettings))
+	mux.Handle("POST /api/v1/azure/test", s.auth(s.handleTestAzure))
+
 	mux.Handle("GET /api/v1/settings", s.auth(s.handleGetSettings))
 	mux.Handle("PUT /api/v1/settings", s.auth(s.handlePutSettings))
 	mux.Handle("GET /api/v1/events", s.auth(s.handleEvents))
