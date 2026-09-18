@@ -210,6 +210,10 @@ logged. Lot 2 will attach delivery channels to exactly these two transitions and
 cannot be deleted, only muted per host (e.g. a laptop that gets switched off). A `never_seen` host
 triggers nothing: it was never seen, so it cannot have disappeared.
 
+**Muting is per host, not per rule.** A muted host raises nothing at all — neither its offline
+rule nor any threshold. Muting a laptop that is switched off every evening and would otherwise
+also trip a disk rule while idle has to silence the host, not just one of its rules.
+
 **Silence ≠ zero.** The evaluator only reads samples newer than 2 intervals. A host without a
 fresh sample is evaluated by the `status` rule only, never by thresholds; otherwise a stopped agent
 would resolve every CPU alert to `ok` while nothing is known. Dedicated test.
