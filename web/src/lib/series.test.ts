@@ -51,9 +51,22 @@ describe('toSeries', () => {
     const d = toSeries(pts, [memPct]);
     expect(d[1]).toEqual([50, null, 75]);
   });
-  it('lists mounts and sensors across points', () => {
+  it('lists mounts across points', () => {
     expect(diskMounts(pts)).toEqual(['/', '/data']);
-    expect(sensors(pts)).toEqual(['cpu']);
+  });
+  it('ranks sensors by their peak, hottest first', () => {
+    const many: Point[] = [
+      pt('2026-09-17T10:00:00Z', {
+        temps: [
+          { sensor: 'cool', celsius: 30 },
+          { sensor: 'hot', celsius: 90 },
+          { sensor: 'mid', celsius: 60 }
+        ]
+      }),
+      pt('2026-09-17T10:00:10Z', { temps: [{ sensor: 'cool', celsius: 95 }] })
+    ];
+    expect(sensors(many)).toEqual(['cool', 'hot', 'mid']);
+    expect(sensors([pt('2026-09-17T10:00:00Z')])).toEqual([]);
   });
   it('reads one mount, null where it is absent', () => {
     const d = toSeries(pts, [diskPct('/data')]);

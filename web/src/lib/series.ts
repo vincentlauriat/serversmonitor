@@ -15,10 +15,17 @@ export function diskMounts(points: Point[]): string[] {
   return [...set].sort();
 }
 
+/** Sensors ranked by their peak over the period, hottest first.
+ * A Mac reports 39 of them; charting all of them produces a legend longer
+ * than the chart and tells you nothing. The caller takes the first few. */
 export function sensors(points: Point[]): string[] {
-  const set = new Set<string>();
-  for (const p of points) for (const t of p.temps ?? []) set.add(t.sensor);
-  return [...set].sort();
+  const peak = new Map<string, number>();
+  for (const p of points) {
+    for (const t of p.temps ?? []) {
+      peak.set(t.sensor, Math.max(peak.get(t.sensor) ?? -Infinity, t.celsius));
+    }
+  }
+  return [...peak.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([name]) => name);
 }
 
 export function diskPct(mount: string): Pick {

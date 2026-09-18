@@ -36,7 +36,9 @@
         {
           stroke: axisColor,
           grid: { stroke: gridColor },
-          size: 60,
+          // The unit is appended to every tick, so a long one like " MB/s"
+          // needs a wider gutter or the leading digits are clipped.
+          size: 46 + unit.length * 7,
           values: (_u, vals) => vals.map((v) => format(v) + unit)
         }
       ],

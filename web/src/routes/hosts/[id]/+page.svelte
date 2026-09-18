@@ -48,7 +48,9 @@
   });
 
   const mounts = $derived(diskMounts(points));
-  const sens = $derived(sensors(points));
+  const allSensors = $derived(sensors(points));
+  const TOP_SENSORS = 6;
+  const sens = $derived(allSensors.slice(0, TOP_SENSORS));
   const swapPick = $derived((p: Point) =>
     p.swap_used !== null && host?.latest?.swap_total ? (100 * p.swap_used) / host.latest.swap_total : null
   );
@@ -139,7 +141,12 @@
 
       {#if sens.length > 0}
         <section class="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
-          <h2 class="mb-1 text-sm font-medium">Temperatures</h2>
+          <h2 class="mb-1 text-sm font-medium">
+            Temperatures
+            {#if allSensors.length > sens.length}
+              <span class="font-normal text-zinc-500">hottest {sens.length} of {allSensors.length} sensors</span>
+            {/if}
+          </h2>
           <Chart data={toSeries(points, sens.map(temp))} labels={sens} unit="°C" format={pctFmt} />
         </section>
       {/if}
