@@ -92,3 +92,18 @@ func requireURL(name string, enabled bool, raw string, httpsOnly bool) error {
 	}
 	return nil
 }
+
+// Enabled builds the channels the configuration asks for, in a stable order.
+func Enabled(c Config) []Channel {
+	var out []Channel
+	if c.SMTP.Enabled {
+		out = append(out, NewSMTP(c.SMTP))
+	}
+	if c.Webhook.Enabled {
+		out = append(out, NewWebhook(c.Webhook))
+	}
+	if c.Teams.Enabled {
+		out = append(out, NewTeams(c.Teams))
+	}
+	return out
+}
