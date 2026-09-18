@@ -114,7 +114,7 @@ func azureError(status int, body []byte) error {
 	if msg == "" {
 		msg = string(body)
 	}
-	return fmt.Errorf("%s: %s", http.StatusText(status), truncate(msg, 300))
+	return &Error{Status: status, Code: e.Error, Message: msg}
 }
 
 func truncate(s string, n int) string {

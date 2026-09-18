@@ -213,3 +213,101 @@ func TestPostSendsJSONAndReturnsTheBody(t *testing.T) {
 		t.Fatalf("out = %s", out)
 	}
 }
+
+// --- lot 4: the status has to survive as a number ---
+
+func TestErrorKeepsTheStatusAsANumber(t *testing.T) {
+	// Lot 4 branches on 403 vs 404 vs 409. Recovering that by matching
+	// http.StatusText out of a message string would be parsing English.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"error":{"code":"AuthorizationFailed","message":"no role"}}`)
+	}))
+	defer srv.Close()
+	c := NewClient(staticSource("tok"), Options{Base: srv.URL})
+	_, err := c.GetAll(context.Background(), "/x", nil)
+	if StatusOf(err) != http.StatusForbidden {
+		t.Fatalf("StatusOf = %d, want 403", StatusOf(err))
+	}
+	var ae *Error
+	if !errors.As(err, &ae) {
+		t.Fatalf("want an *Error, got %T", err)
+	}
+	if ae.Code != "AuthorizationFailed" {
+		t.Fatalf("Code = %q, want AuthorizationFailed", ae.Code)
+	}
+}
+
+func TestStatusSurvivesTheRetryableWrapper(t *testing.T) {
+	// A 429 is wrapped by MarkRetryable. errors.As traverses Unwrap today;
+	// this test is here so a later refactor cannot quietly drop that.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"error":{"code":"TooManyRequests","message":"slow down"}}`)
+	}))
+	defer srv.Close()
+	c := NewClient(staticSource("tok"), Options{Base: srv.URL, Attempts: 1})
+	_, err := c.GetAll(context.Background(), "/x", nil)
+	if StatusOf(err) != http.StatusTooManyRequests {
+		t.Fatalf("StatusOf = %d, want 429", StatusOf(err))
+	}
+	if !Retryable(err) {
+		t.Fatal("a 429 must still read as retryable")
+	}
+}
+
+func TestStatusOfANonHTTPFailureIsZero(t *testing.T) {
+	// A refused connection is not a 500. Reporting one would invent a server
+	// answer that never came.
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	base := srv.URL
+	srv.Close()
+	c := NewClient(staticSource("tok"), Options{Base: base, Attempts: 1})
+	_, err := c.GetAll(context.Background(), "/x", nil)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if StatusOf(err) != 0 {
+		t.Fatalf("StatusOf = %d, want 0", StatusOf(err))
+	}
+}
+
+func TestGetReturnsOneObjectAndGetAllCannot(t *testing.T) {
+	const body = `{"id":"/x","properties":{"state":"Running"}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+	c := NewClient(staticSource("tok"), Options{Base: srv.URL})
+
+	got, err := c.Get(context.Background(), "/x", nil)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(got) != body {
+		t.Fatalf("Get = %s, want the body verbatim", got)
+	}
+
+	// Why Get has to exist: a single object unmarshals into the page envelope
+	// without error and yields nothing at all. A silent empty is the failure
+	// mode this project refuses everywhere else.
+	items, err := c.GetAll(context.Background(), "/x", nil)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("GetAll on one object = %d items, %v; want 0, nil — that is the trap", len(items), err)
+	}
+}
+
+func TestStatusSurvivesABodyThatIsNotTheArmEnvelope(t *testing.T) {
+	// A proxy between the hub and ARM can answer 403 with an HTML page or
+	// nothing at all. The status is then the only fact left; losing it would
+	// turn "you lack the role" into an unclassifiable failure.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+	c := NewClient(staticSource("tok"), Options{Base: srv.URL})
+	_, err := c.GetAll(context.Background(), "/x", nil)
+	if StatusOf(err) != http.StatusForbidden {
+		t.Fatalf("StatusOf = %d, want 403", StatusOf(err))
+	}
+}
