@@ -111,7 +111,9 @@ delivered to a real Teams channel from this code. Office 365 connector URLs
 
 ## Design notes
 
-The design and the implementation plan live in `docs/superpowers/`. They record the decisions and,
+[docs/ARCHITECTURE_EN.md](docs/ARCHITECTURE_EN.md) is the source of truth for technical decisions,
+with a French mirror in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The design specs and the
+implementation plans live in `docs/superpowers/`. They record the decisions and,
 more usefully, the things that only showed up against real data — a Mac reporting eight mount points
 of which seven are noise, thirty-nine temperature sensors, a hub exiting 0 on a port that was already
 taken, a duration formatter that turned `10m` into `1`, and a test notification that linked to a host
