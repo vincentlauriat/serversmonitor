@@ -117,6 +117,12 @@ func (c *Client) Post(ctx context.Context, path string, query url.Values, body a
 	return c.do(ctx, http.MethodPost, c.url(path, query), raw)
 }
 
+// PostAction sends an action. It shares the client with the read path but not
+// the retry policy: see retryThrottlingOnly.
+func (c *Client) PostAction(ctx context.Context, path string, query url.Values) ([]byte, error) {
+	return c.doWith(ctx, http.MethodPost, c.url(path, query), nil, retryThrottlingOnly)
+}
+
 func (c *Client) url(path string, query url.Values) string {
 	u := strings.TrimSuffix(c.opt.Base, "/") + path
 	if len(query) > 0 {
@@ -126,6 +132,14 @@ func (c *Client) url(path string, query url.Values) string {
 }
 
 func (c *Client) do(ctx context.Context, method, rawURL string, body []byte) ([]byte, error) {
+	return c.doWith(ctx, method, rawURL, body, Retryable)
+}
+
+// doWith takes the retry policy per call rather than per client. One
+// *Client is shared by the inventory sweep, the cost sweep and the actions
+// (see hub.go), so weakening its Options for one call would be a race against
+// a sweep already in flight.
+func (c *Client) doWith(ctx context.Context, method, rawURL string, body []byte, retry func(error) bool) ([]byte, error) {
 	var last error
 	for attempt := 1; attempt <= c.opt.Attempts; attempt++ {
 		out, wait, err := c.attempt(ctx, method, rawURL, body)
@@ -133,7 +147,7 @@ func (c *Client) do(ctx context.Context, method, rawURL string, body []byte) ([]
 			return out, nil
 		}
 		last = err
-		if !Retryable(err) || attempt == c.opt.Attempts {
+		if !retry(err) || attempt == c.opt.Attempts {
 			break
 		}
 		if wait <= 0 {
