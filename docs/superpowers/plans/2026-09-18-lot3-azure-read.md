@@ -3719,14 +3719,17 @@ git commit -m "feat(api): azure inventory, cost and settings endpoints"
 export interface AzureRow { id: string; name: string; type: string; resource_group: string;
   location: string; state: string | null; host?: string; tags: Record<string,string>;
   cost: number | null; currency?: string; deleted: boolean }
-export interface AzureTotal { currency: string; spent: number; budget: number }
+export interface AzureTotal { currency: string; spent: number }
 export interface AzureSync { ok: boolean; message: string; at: string }
+// budget is one figure for the whole hub, never one per currency: repeated
+// beside each total it would claim a budget of 100 in euros and another of 100
+// in dollars.
 export interface AzureView { mode: string; period: string; rows: AzureRow[];
-  totals: AzureTotal[]; cost_as_of: string | null; sync: Record<string, AzureSync> }
+  totals: AzureTotal[]; budget: number; cost_as_of: string | null; sync: Record<string, AzureSync> }
 // web/src/lib/azure.ts
 export function money(amount: number | null, currency: string | undefined): string
 export function shortType(t: string): string
-export function budgetShare(t: AzureTotal): number | null
+export function budgetShare(spent: number, budget: number): number | null
 export function sortRows(rows: AzureRow[]): AzureRow[]
 ```
 
@@ -3773,13 +3776,13 @@ describe('shortType', () => {
 
 describe('budgetShare', () => {
   it('is null when no budget is set', () => {
-    expect(budgetShare({ currency: 'EUR', spent: 5, budget: 0 })).toBeNull();
+    expect(budgetShare(5, 0)).toBeNull();
   });
   it('is a fraction of the budget', () => {
-    expect(budgetShare({ currency: 'EUR', spent: 25, budget: 100 })).toBeCloseTo(0.25);
+    expect(budgetShare(25, 100)).toBeCloseTo(0.25);
   });
   it('does not cap at one, because going over budget is the thing worth seeing', () => {
-    expect(budgetShare({ currency: 'EUR', spent: 150, budget: 100 })).toBeCloseTo(1.5);
+    expect(budgetShare(150, 100)).toBeCloseTo(1.5);
   });
 });
 
@@ -3845,11 +3848,17 @@ export function shortType(t: string): string {
   return i >= 0 ? t.slice(i + 1) : t;
 }
 
-/** The share of the budget spent, or null when no budget is set. Not capped:
- *  going over is exactly the thing worth seeing. */
-export function budgetShare(t: AzureTotal): number | null {
-  if (!t.budget) return null;
-  return t.spent / t.budget;
+/**
+ * The share of the budget spent, or null when no budget is set. Not capped:
+ * going over is exactly the thing worth seeing.
+ *
+ * Takes the two numbers rather than a total, because the budget belongs to the
+ * hub and the spend belongs to a currency. Passing a total would invite showing
+ * the same budget beside a euro figure and a dollar one.
+ */
+export function budgetShare(spent: number, budget: number): number | null {
+  if (!budget) return null;
+  return spent / budget;
 }
 
 /** Living resources first, dearest first; a resource with no reported cost

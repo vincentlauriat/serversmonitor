@@ -58,6 +58,7 @@ manifesté, et c'est pour cela que c'est le hub, et non l'agent, qui décide qu'
 | `internal/hub/ingest` | Authentifie un agent, lit ses échantillons, les écrit via le store. |
 | `internal/hub/alerts` | La machine d'état et l'évaluateur. Pur : ni base, ni horloge propre. |
 | `internal/hub/notify` | Le rendu des messages, les trois canaux, et le dispatcher. |
+| `internal/hub/azure` | Les jetons Entra, le client ARM, le balayage d'inventaire et la requête de coûts. Aucun SDK Azure. |
 | `internal/hub/auth` | Hachage de mot de passe en Argon2id et limiteur de tentatives de connexion. |
 | `internal/hub/server` | L'API REST, les Server-Sent Events, et le front embarqué. |
 | `internal/hub/config` | Les variables d'environnement. Lues une fois au démarrage. |
@@ -129,7 +130,10 @@ stockés en chaînes RFC 3339 UTC, donc l'ordre lexical est l'ordre chronologiqu
 | `alert_events` | Journal en ajout seul des transitions `fired` et `resolved`. |
 | `deliveries` | Une ligne par (événement, canal) : `pending`, `sent` ou `failed`. |
 | `users`, `sessions` | Le compte administrateur unique et ses cookies. |
-| `settings` | Clé/valeur : intervalle, rétentions, et toute la configuration des notifications. |
+| `settings` | Clé/valeur : intervalle, rétentions, et toute la configuration des notifications et d'Azure. |
+| `azure_resources` | Une ligne par ressource, telle que le dernier balayage réussi l'a vue. `state` et `deleted_at` sont nullables. |
+| `azure_costs` | Une ligne par (ressource, mois). **Aucune clé étrangère, délibérément.** |
+| `azure_sync` | Une ligne par périmètre : le dernier inventaire et la dernière requête de coûts ont-ils abouti, et sinon pourquoi. |
 
 Toutes les tables de séries cascadent depuis `hosts`, et `deliveries` cascade depuis `alert_events`.
 Supprimer un hôte efface tout ce qui le concerne en une seule instruction.
@@ -202,6 +206,51 @@ octet par octet contre le contrat documenté par Microsoft et le comportement HT
 URL de workflow appartient à un tenant. Les URL de connecteur Office 365 ne fonctionnent plus depuis
 mai 2026 et ne sont pas supportées.
 
+## Azure
+
+`azure` parle à Azure Resource Manager en HTTP, à la main. Aucun SDK : la surface utilisée tient en
+quatre points d'entrée, et le goût est le même que celui de la lecture de Docker par sa socket unix.
+
+**Le rôle Reader sur le groupe de ressources suffit, et il couvre aussi les coûts.** La requête Cost
+Management est un POST HTTP, ce qui se lit comme une écriture alors que ce n'en est pas une. Son
+opération est `Microsoft.CostManagement/query/read` : ni rôle Contributor, ni rôle de facturation
+distinct. C'est le fait le moins évident du lot.
+
+Trois formes de jeton sont gérées parce que trois émetteurs ne s'accordent pas. Entra renvoie
+`expires_in` en nombre JSON ; IMDS le renvoie en chaîne ; App Service n'envoie que `expires_on`. Les
+trois sont analysées, et un jeton est renouvelé cinq minutes avant son expiration.
+
+**L'inventaire demande deux passes.** L'appel catalogue liste ce qui existe mais ne porte aucun état
+d'exécution : un second appel par fournisseur le complète. Une ressource dont l'état n'a jamais été
+lu garde `state` à `NULL` — jamais la chaîne `unknown`, jamais `stopped`.
+
+**Le balayage est tout ou rien.** `ReplaceAzureInventory` insère et marque supprimé dans une seule
+transaction, et le hub ne l'appelle que si tous les appels du balayage ont réussi. Une lecture
+partielle serait balayée comme une salve de suppressions, et « je ne vois pas Azure » s'afficherait
+comme « le bac à sable est vide ». Une synchronisation en échec ne change donc aucune ligne : elle
+écrit sa raison dans `azure_sync`, que la page affiche en rouge au-dessus du dernier bon tableau.
+
+**Coût et inventaire sont deux faits distincts.** `azure_costs` n'a pas de clé étrangère vers
+`azure_resources` : une ressource supprimée en cours de mois a bel et bien coûté, et retirer sa ligne
+sous-estimerait la facture. L'API joint les deux pour l'affichage seulement, et une ligne de coût
+sans ligne d'inventaire est montrée barrée plutôt que cachée. Une ressource qu'Azure n'a pas facturée
+a `cost` à `null`, jamais `0`.
+
+Les colonnes de la requête de coûts sont repérées **par leur nom**, pas par leur position : Azure les
+ordonne comme il veut, et lire `rows[0][1]` comme un identifiant de ressource marche jusqu'au jour où
+c'est la devise.
+
+La configuration vit dans `settings`, éditable depuis le navigateur. Au moins un groupe de ressources
+est exigé — lire une souscription entière demanderait une attribution de rôle à l'échelle de la
+souscription que ce hub ne réclame pas. Le secret client ne sort jamais de l'API : les lectures
+n'exposent que `client_secret_set`, et il n'apparaît ni dans un message d'erreur ni dans un journal.
+
+**Rien de tout cela n'a lu une vraie souscription.** Tous les points d'entrée Azure de la suite sont
+des serveurs `httptest`. Le tenant interdit de créer une app registration et d'attribuer un rôle : le
+justificatif n'existera donc pas tant qu'un administrateur ne sera pas intervenu une fois. Ce qui *a*
+été vérifié contre le vrai Azure, c'est le chemin d'erreur : un identifiant de tenant volontairement
+faux renvoie `AADSTS900021`, et ce message parvient intact au navigateur, trace id compris.
+
 ## Le processus hub
 
 `Run` démarre le dispatcher, rejoue les livraisons en attente, puis cadence :
@@ -211,9 +260,20 @@ mai 2026 et ne sont pas supportées.
 | intervalle d'échantillonnage | Marque les hôtes silencieux ; un passage hors ligne évalue tout de suite au lieu d'attendre. |
 | minute | Évalue les règles, persiste les transitions, les publie, les confie au dispatcher. |
 | heure | Agrège, purge les échantillons, les sessions et les livraisons réglées. |
+| intervalle d'inventaire Azure | Balaie les groupes de ressources configurés. |
+| intervalle de coûts Azure | Lance la requête du mois en cours. |
 
-La configuration des canaux est tenue dans un `atomic.Pointer` : le handler des réglages remplace le
-tout, l'évaluateur ne fait jamais que lire.
+La configuration des canaux et celle d'Azure sont tenues dans un `atomic.Pointer` : le handler des
+réglages remplace le tout, l'évaluateur ne fait jamais que lire.
+
+**Sauvegarder les réglages Azure déclenche une synchronisation immédiate**, via un canal à une place
+que la boucle principale écoute. Sans cela, la page affiche « aucun inventaire n'a encore tourné » à
+côté d'un tableau vide jusqu'au tick suivant — et plus longtemps encore, car les tickers ont été
+construits au démarrage avec la cadence d'une heure qu'utilise une intégration éteinte, et rien ne
+les remet à l'heure avant leur premier déclenchement. Le réveil lance les deux synchronisations et
+réaligne les deux tickers. Chaque issue est diffusée, les échecs compris : une lecture Azure peut
+mettre des minutes à expirer, et une page qu'on n'informe que des succès reste figée sur « rien n'a
+encore tourné » pendant toute la durée d'un échec.
 
 ## La couche web
 
@@ -258,7 +318,7 @@ est dans la base et éditable depuis l'interface.
 
 ## Tests
 
-178 tests Go sur 12 paquets et 26 tests front, plus un test bout en bout qui lance un vrai hub et un
+249 tests Go sur 13 paquets et 45 tests front, plus un test bout en bout qui lance un vrai hub et un
 vrai agent sur un vrai WebSocket et vérifie qu'une alerte atteint un webhook et que la livraison est
 enregistrée.
 
@@ -274,3 +334,9 @@ n'a pas vus :
   avant de valider, parce que l'ordre d'itération d'une map laissait un cas ultérieur réécrire la clé
   vérifiée. Un test d'éclatement par canal manquait entièrement, si bien qu'un `break` à la place du
   `continue` passait 174 tests.
+
+Le lot 3 a redit les deux leçons. Faire tourner un vrai hub a révélé que sauvegarder les réglages
+Azure ne synchronisait rien pendant une heure, ce qu'aucun test ne couvrait puisque tous appelaient
+la fonction de synchronisation directement. La mutation a révélé qu'un total de coûts répétait le
+budget unique du hub à côté de chaque devise, et qu'une synchronisation en échec n'était jamais
+diffusée — deux choses sur lesquelles la suite était verte.

@@ -57,6 +57,8 @@ is why the hub, not the agent, decides a host is offline.
 | `internal/hub/ingest` | Authenticates an agent, reads its samples, writes them through the store. |
 | `internal/hub/alerts` | The state machine and the evaluator. Pure: no database, no clock of its own. |
 | `internal/hub/notify` | Message rendering, the three channels, and the dispatcher. |
+| `internal/hub/azure` | Entra tokens, the ARM client, the inventory sweep and the cost query. No Azure SDK. |
+| `internal/hub/azure` | Entra tokens, the ARM client, the inventory sweep and the cost query. No Azure SDK. |
 | `internal/hub/auth` | Argon2id password hashing and the login rate limiter. |
 | `internal/hub/server` | The REST API, Server-Sent Events, and the embedded front-end. |
 | `internal/hub/config` | Environment variables. Read once at startup. |
@@ -127,7 +129,10 @@ lexical order is chronological order.
 | `alert_events` | Append-only log of `fired` and `resolved` transitions. |
 | `deliveries` | One row per (event, channel): `pending`, `sent` or `failed`. |
 | `users`, `sessions` | The single admin account and its cookies. |
-| `settings` | Key/value: interval, retentions, and all notification configuration. |
+| `settings` | Key/value: interval, retentions, and all notification and Azure configuration. |
+| `azure_resources` | One row per resource, as the last successful sweep saw it. `state` and `deleted_at` are nullable. |
+| `azure_costs` | One row per (resource, month). **No foreign key, deliberately.** |
+| `azure_sync` | One row per scope: whether the last inventory and the last cost query worked, and why not. |
 
 Every series table cascades from `hosts`, and `deliveries` cascades from `alert_events`. Deleting a
 host removes everything about it in one statement.
@@ -196,6 +201,49 @@ byte for byte against the contract Microsoft documents and the HTTP behaviour is
 workflow URL belongs to a tenant. Office 365 connector URLs stopped working in May 2026 and are not
 supported.
 
+## Azure
+
+`azure` speaks Azure Resource Manager over `net/http`, by hand. No SDK: the surface used is four
+endpoints, and the taste matches reading Docker over its unix socket.
+
+**Reader on the resource group is the whole requirement, and it covers cost too.** The Cost
+Management query is an HTTP POST, which reads as a write and does not. Its operation is
+`Microsoft.CostManagement/query/read`, so no Contributor role and no separate billing role is
+needed. This is the least obvious fact in the lot.
+
+Three token shapes are handled because three issuers disagree. Entra returns `expires_in` as a JSON
+number; IMDS returns it as a string; App Service sends only `expires_on`. All three are parsed, and
+a token is refreshed five minutes before it expires.
+
+**Inventory takes two passes.** The catalogue call lists what exists but carries no running state,
+so a second call per provider fills it in. A resource whose state was never read keeps `state` at
+`NULL` — never the string `unknown`, and never `stopped`.
+
+**The sweep is all or nothing.** `ReplaceAzureInventory` upserts and soft-deletes in one
+transaction, and the hub calls it only when every call in the sweep succeeded. A partial read would
+be swept as a batch of deletions, and "I cannot see Azure" would render as "the sandbox is empty".
+A failed sync therefore changes no row; it writes its reason into `azure_sync`, which the page shows
+in red above the last good table.
+
+**Cost and inventory are separate facts.** `azure_costs` has no foreign key to `azure_resources`: a
+resource deleted mid-month still cost money, and dropping its row would understate the bill. The API
+joins the two for display only, and a cost row with no inventory row is shown struck through rather
+than hidden. A resource Azure has not billed has `cost` at `null`, never `0`.
+
+The cost query's columns are located **by name**, not by position: Azure orders them as it likes,
+and reading `rows[0][1]` as a resource id works until the day it is the currency.
+
+Configuration lives in `settings`, editable from the browser. At least one resource group is
+required — reading a whole subscription needs a subscription-scope role assignment this hub does not
+ask for. The client secret never leaves the API: reads expose `client_secret_set` only, and it never
+appears in an error message or a log.
+
+**Nothing here has read a real subscription.** Every Azure endpoint in the suite is an `httptest`
+server. The tenant forbids creating an app registration and assigning a role, so the credential does
+not exist until an administrator acts once. What *has* been checked against real Azure is the error
+path: a deliberately wrong tenant id returns `AADSTS900021` and that message reaches the browser
+intact, trace id included.
+
 ## The hub process
 
 `Run` starts the dispatcher, replays pending deliveries, then ticks:
@@ -205,9 +253,18 @@ supported.
 | sampling interval | Marks hosts stale; an offline transition evaluates immediately rather than waiting. |
 | minute | Evaluates the rules, persists transitions, publishes them, hands them to the dispatcher. |
 | hour | Aggregates, purges samples, sessions and settled deliveries. |
+| Azure inventory interval | Sweeps the configured resource groups. |
+| Azure cost interval | Runs the month-to-date query. |
 
-Channel configuration is held in an `atomic.Pointer`: the settings handler swaps the whole thing, the
-evaluator only ever reads it.
+Channel and Azure configuration are held in an `atomic.Pointer`: the settings handler swaps the whole
+thing, the evaluator only ever reads it.
+
+**Saving the Azure settings syncs now, through a one-slot channel the run loop selects on.** Without
+it the page shows "no inventory has run yet" beside an empty table until the next tick — and longer,
+because the tickers were built at boot with the one-hour cadence an off integration uses and nothing
+resets them until they first fire. The kick runs both syncs and realigns both tickers. Every
+outcome is broadcast, failures included: an Azure read can take minutes to time out, and a page told
+only about successes sits on "nothing has run yet" for the whole of a failure.
 
 ## The web layer
 
@@ -251,7 +308,7 @@ database and editable from the interface.
 
 ## Testing
 
-178 Go tests across 12 packages and 26 front-end tests, plus an end-to-end test that runs a real hub
+249 Go tests across 13 packages and 45 front-end tests, plus an end-to-end test that runs a real hub
 and a real agent over a real WebSocket and asserts that an alert reaches a webhook and that the
 delivery is recorded.
 
@@ -264,3 +321,13 @@ Two habits are worth keeping, because both caught defects the suite did not:
 - **Mutate the code to check the test.** A settings test passed against a handler that wrote before
   validating, because map iteration order let a later case overwrite the key it checked. A fan-out
   test was missing entirely, so a `break` where the loop has `continue` passed 174 tests.
+
+Lot 3 repeated both lessons. Running a real hub found that saving the Azure settings synced nothing
+for an hour, which no test covered because every test called the sync function directly. Mutation
+found that a cost total repeated the hub's single budget beside each currency, and that a failed sync
+was never broadcast — both of which the suite had been green on.
+
+Lot 3 repeated both lessons. Running a real hub found that saving the Azure settings synced nothing
+for an hour, which no test covered because every test called the sync function directly. Mutation
+found that a cost total repeated the hub's single budget beside each currency, and that a failed sync
+was never broadcast — both of which the suite had been green on.

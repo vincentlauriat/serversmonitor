@@ -91,9 +91,37 @@ Adaptive Card contract Microsoft documents, and the HTTP behaviour is tested, bu
 delivered to a real Teams channel from this code. Office 365 connector URLs
 (`outlook.office.com/webhook/…`) stopped working in May 2026 and are not supported.
 
-## What lot 2 does not do
+## Azure
 
-- **No Azure.** Reading and managing an Azure sandbox resource group is lots 3 to 6.
+ServersMonitor reads an Azure resource group: what is in it, what state it is in, and what it has
+cost so far this month. It changes nothing — starting and stopping resources is lot 4.
+
+| It needs | Detail |
+|---|---|
+| A credential | Either an app registration with a client secret, or a managed identity on the machine running the hub. |
+| The **Reader** role | On each resource group, granted by a tenant administrator. |
+| At least one resource group | Reading a whole subscription would need a subscription-scope role assignment this hub does not ask for. |
+
+**Reader covers cost as well as inventory.** The Cost Management query is an HTTP POST, which looks
+like a write and is not: its operation is `Microsoft.CostManagement/query/read`. No Contributor role
+and no separate billing role is needed.
+
+Configure it under **Settings → Azure**, then press **Test connection**, which reports Azure's own
+error rather than a generic failure — usually a role assignment that was never made.
+
+**A failed sync keeps the last good inventory** and says so in red above the table. It never empties
+it: an agent that cannot reach Azure must not look like a sandbox with nothing in it. In the same
+spirit, a resource Azure has not billed shows a dash, never `0.00`.
+
+⚠️ **No real subscription has ever been read by this code.** Every Azure endpoint in the test suite
+is a local fake. The error path *has* been checked against real Azure — a wrong tenant id returns
+`AADSTS900021` and that message reaches the browser intact — but the first successful sync will be
+yours.
+
+## What this does not do yet
+
+- **No Azure actions.** Start, stop and restart are lot 4; provisioning is lot 5; cost guardrails
+  are lot 6.
 - **No per-rule routing.** Every enabled channel receives every transition. Mute a host to silence it.
 - **One user.** A single local admin account; Entra ID is deferred.
 - **No TLS of its own.** Put a reverse proxy in front for anything but localhost.
@@ -104,8 +132,8 @@ delivered to a real Teams channel from this code. Office 365 connector URLs
 |---|---|---|
 | 1 | Hub, agent, web UI, alerts | **done** |
 | 2 | Alert channels: SMTP, webhook / ntfy, Teams | **done** |
-| 3 | Azure read: inventory, state, costs vs budget | next |
-| 4 | Azure actions: start, stop, restart | |
+| 3 | Azure read: inventory, state, costs vs budget | **done** |
+| 4 | Azure actions: start, stop, restart | next |
 | 5 | VM provisioning with the agent pre-installed | |
 | 6 | Cost guardrails: schedules, orphans, budget alerts | |
 
@@ -116,5 +144,5 @@ with a French mirror in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The design
 implementation plans live in `docs/superpowers/`. They record the decisions and,
 more usefully, the things that only showed up against real data — a Mac reporting eight mount points
 of which seven are noise, thirty-nine temperature sensors, a hub exiting 0 on a port that was already
-taken, a duration formatter that turned `10m` into `1`, and a test notification that linked to a host
-that does not exist.
+taken, a duration formatter that turned `10m` into `1`, a test notification that linked to a host
+that does not exist, and Azure settings that synced nothing for an hour after being saved.
