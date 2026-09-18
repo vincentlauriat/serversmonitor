@@ -27,6 +27,14 @@ type azureFake struct {
 	calls     int
 	failAfter int
 	sites     []string
+	// Lot 4: what the fake did with actions, and what it answers.
+	actions      []string
+	actionStatus int    // 0 = succeed
+	readStatus   int    // 0 = succeed
+	stateAfter   string // what the read-back reports
+	// holdAction blocks an action call until it is closed, so a test can look
+	// at the world while one is genuinely in flight.
+	holdAction chan struct{}
 	// hold, when set, makes the catalogue call block until it is closed. It
 	// stands in for the real thing this lot has to survive: an Azure endpoint
 	// that takes minutes to time out.
@@ -34,7 +42,7 @@ type azureFake struct {
 }
 
 func newAzureFake(t *testing.T, sites ...string) *azureFake {
-	f := &azureFake{failAfter: -1, sites: sites}
+	f := &azureFake{failAfter: -1, sites: sites, stateAfter: "Stopped"}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.calls++
@@ -58,6 +66,32 @@ func newAzureFake(t *testing.T, sites ...string) *azureFake {
 					`{"id":"/subscriptions/SUB/resourceGroups/RG/providers/Microsoft.Web/sites/%s","name":%q,"type":"Microsoft.Web/sites","location":"westeurope","properties":null}`, s, s))
 			}
 			fmt.Fprintf(w, `{"value":[%s]}`, strings.Join(parts, ","))
+		// An action: POST …/sites/<name>/{start,stop,restart}.
+		case r.Method == http.MethodPost && isActionPath(r.URL.Path):
+			f.mu.Lock()
+			f.actions = append(f.actions, r.URL.Path)
+			code, state, hold := f.actionStatus, f.stateAfter, f.holdAction
+			f.mu.Unlock()
+			if hold != nil {
+				<-hold
+			}
+			if code != 0 {
+				w.WriteHeader(code)
+				io.WriteString(w, `{"error":{"code":"AuthorizationFailed","message":"no Website Contributor"}}`)
+				return
+			}
+			_ = state
+		// One site, read back after an action. Distinguished from the
+		// enrichment pass by having a name after /sites.
+		case strings.Contains(r.URL.Path, "/Microsoft.Web/sites/"):
+			f.mu.Lock()
+			code, state := f.readStatus, f.stateAfter
+			f.mu.Unlock()
+			if code != 0 {
+				w.WriteHeader(code)
+				return
+			}
+			fmt.Fprintf(w, `{"id":%q,"properties":{"state":%q}}`, r.URL.Path, state)
 		case strings.Contains(r.URL.Path, "/Microsoft.Web/sites"):
 			var parts []string
 			for _, s := range f.sites {
@@ -87,6 +121,21 @@ func newAzureFake(t *testing.T, sites ...string) *azureFake {
 	return f
 }
 
+func isActionPath(p string) bool {
+	for _, verb := range []string{"/start", "/stop", "/restart"} {
+		if strings.HasSuffix(p, verb) {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *azureFake) actionCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.actions...)
+}
+
 // failsFrom makes every call after the nth fail, counting from now.
 func (f *azureFake) failsFrom(n int) {
 	f.mu.Lock()
@@ -107,6 +156,7 @@ func azureHub(t *testing.T, f *azureFake) *Hub {
 		t.Fatal(err)
 	}
 	h.azureBase = f.srv.URL
+	h.readBack = 200 * time.Millisecond // the retry ladder is lot 3's business, not this one's
 	h.ReloadAzure()
 	return h
 }

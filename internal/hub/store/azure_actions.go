@@ -63,6 +63,13 @@ func (s *Store) StartAzureAction(a AzureAction) (int64, error) {
 	return res.LastInsertId()
 }
 
+// SetAzureResourceState writes a state that was read from Azure. It is only
+// ever called with an answer, never with an intention.
+func (s *Store) SetAzureResourceState(id, state string) error {
+	_, err := s.db.Exec(`UPDATE azure_resources SET state = ? WHERE id = ?`, state, id)
+	return err
+}
+
 func (s *Store) MarkAzureActionRunning(id int64) error {
 	_, err := s.db.Exec(`UPDATE azure_actions SET status='running' WHERE id = ? AND status='pending'`, id)
 	return err
