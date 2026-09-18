@@ -1,5 +1,7 @@
 # ServersMonitor
 
+[![ci](https://github.com/vincentlauriat/serversmonitor/actions/workflows/ci.yml/badge.svg)](https://github.com/vincentlauriat/serversmonitor/actions/workflows/ci.yml)
+
 **A self-hosted monitoring hub in the spirit of [Beszel](https://beszel.dev/) — one small agent per
 machine, one hub that stores, draws and alerts.**
 
@@ -40,7 +42,7 @@ it had resolves itself at the worst possible moment.
 
 ## Quick start
 
-Nothing is published yet — no Docker Hub image, no GitHub release. Build it:
+There is no Docker Hub image or GitHub release yet, so build it from this repository:
 
 ```
 docker build -f deploy/Dockerfile -t serversmonitor/hub .
