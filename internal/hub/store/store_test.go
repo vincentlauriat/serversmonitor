@@ -18,10 +18,10 @@ func TestOpenAppliesMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 1 {
-		t.Fatalf("schema version = %d, want 1", v)
+	if v != 2 {
+		t.Fatalf("schema version = %d, want 2", v)
 	}
-	for _, table := range []string{"hosts", "samples", "samples_10m", "samples_1h", "samples_1d", "containers", "container_samples", "alert_rules", "alert_events", "users", "sessions", "settings"} {
+	for _, table := range []string{"hosts", "samples", "samples_10m", "samples_1h", "samples_1d", "containers", "container_samples", "alert_rules", "alert_events", "deliveries", "users", "sessions", "settings"} {
 		var n int
 		if err := s.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&n); err != nil || n != 1 {
 			t.Fatalf("table %s missing (n=%d err=%v)", table, n, err)
@@ -62,7 +62,7 @@ func TestOpenTwiceIsIdempotent(t *testing.T) {
 		t.Fatalf("second open: %v", err)
 	}
 	defer s2.Close()
-	if v, _ := s2.SchemaVersion(); v != 1 {
+	if v, _ := s2.SchemaVersion(); v != 2 {
 		t.Fatalf("version after reopen = %d", v)
 	}
 }

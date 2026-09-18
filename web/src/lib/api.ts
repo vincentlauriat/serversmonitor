@@ -120,3 +120,37 @@ export const api = {
   patch: <T>(path: string, body?: unknown) => call<T>('PATCH', path, body),
   del: <T>(path: string) => call<T>('DELETE', path)
 };
+
+export interface NotifyHealth {
+  state: string;
+  last_error?: string;
+  at: string;
+}
+export interface Notifications {
+  public_url: string;
+  smtp_enabled: boolean;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_username: string;
+  smtp_password_set: boolean;
+  smtp_from: string;
+  smtp_to: string[];
+  smtp_tls: string;
+  webhook_enabled: boolean;
+  webhook_url: string;
+  webhook_headers: Record<string, string>;
+  teams_enabled: boolean;
+  teams_url: string;
+  health: Record<string, NotifyHealth>;
+}
+export interface Delivery {
+  id: number;
+  channel: string;
+  state: string;
+  attempts: number;
+  last_error?: string;
+  host: string;
+  metric: string;
+  kind: string;
+  at: string;
+}

@@ -28,6 +28,7 @@ type Deps struct {
 	Store         *store.Store
 	Agents        AgentHandler
 	Bus           *Broadcaster
+	Notify        Notifier
 	Static        fs.FS
 	InstallScript []byte
 	Now           func() time.Time
@@ -75,6 +76,11 @@ func New(d Deps) http.Handler {
 	mux.Handle("POST /api/v1/alerts/rules", s.auth(s.handleCreateRule))
 	mux.Handle("PUT /api/v1/alerts/rules/{id}", s.auth(s.handleUpdateRule))
 	mux.Handle("DELETE /api/v1/alerts/rules/{id}", s.auth(s.handleDeleteRule))
+
+	mux.Handle("GET /api/v1/notifications", s.auth(s.handleGetNotifications))
+	mux.Handle("PUT /api/v1/notifications", s.auth(s.handlePutNotifications))
+	mux.Handle("POST /api/v1/notifications/test", s.auth(s.handleTestNotification))
+	mux.Handle("GET /api/v1/notifications/deliveries", s.auth(s.handleDeliveries))
 
 	mux.Handle("GET /api/v1/settings", s.auth(s.handleGetSettings))
 	mux.Handle("PUT /api/v1/settings", s.auth(s.handlePutSettings))
