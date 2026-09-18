@@ -1,0 +1,46 @@
+services:
+  hub:
+    image: serversmonitor/hub:latest
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    ports: ['8090:8090']
+    volumes: ['hub-data:/data']
+    environment:
+      SM_LOG_LEVEL: info
+      # Set this once the hub is served over HTTPS:
+      # SM_SECURE_COOKIES: 'true'
+
+  # Optional: watch the machine that runs the hub. Create the host in the UI
+  # first, then put its token in deploy/.env as SM_TOKEN.
+  agent:
+    image: serversmonitor/agent:latest
+    build:
+      context: ..
+      dockerfile: deploy/agent.Dockerfile
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    environment:
+      SM_HUB: ws://localhost:8090
+      SM_TOKEN: ${SM_TOKEN:?create the host in the hub and put its token in deploy/.env}
+      # gopsutil reads the host through these when /proc and /sys are mounted:
+      HOST_PROC: /host/proc
+      HOST_SYS: /host/sys
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+
+  # Optional TLS in front of the hub. Uncomment and set your domain.
+  # caddy:
+  #   image: caddy:2
+  #   restart: unless-stopped
+  #   ports: ['80:80', '443:443']
+  #   command: caddy reverse-proxy --from hub.example.com --to hub:8090
+  #   volumes: ['caddy-data:/data']
+
+volumes:
+  hub-data:
+  # caddy-data:

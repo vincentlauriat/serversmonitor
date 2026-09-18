@@ -1,0 +1,16 @@
+.git
+bin
+release
+data
+web/node_modules
+web/build
+web/.svelte-kit
+internal/hub/webdist/build
+*.db
+*.db-wal
+*.db-shm
+COMMANDS.md
+MEMORY.md
+CHANGES.md
+TODOS.md
+PLAN.md

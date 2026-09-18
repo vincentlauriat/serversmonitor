@@ -20,3 +20,11 @@ jobs:
         with: { node-version: '24' }
       - run: test -f package.json || { echo "no web yet"; exit 0; }
       - run: npm ci && npm test -- --run && npm run build
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: [go, web]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f deploy/Dockerfile -t serversmonitor/hub:ci .
+      - run: docker build -f deploy/agent.Dockerfile -t serversmonitor/agent:ci .
