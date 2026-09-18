@@ -2125,20 +2125,28 @@ func TestQueueFullDropsAResolvedOnlyAsALastResort(t *testing.T) {
 	}
 }
 
-func TestShutdownStopsRetrying(t *testing.T) {
+func TestShutdownStopsRetryingAndLeavesTheRowPending(t *testing.T) {
+	// Deterministic by construction rather than by timing: the real sleepCtx is
+	// used with an hour-long base, so after the first failure the worker is
+	// parked inside the backoff and can only leave it by cancellation.
 	rec := newRecorder(0)
-	d := NewDispatcher(rec, Options{Sleep: func(ctx context.Context, _ time.Duration) bool {
-		return ctx.Err() == nil // a real sleep returns false when cancelled
-	}})
+	d := NewDispatcher(rec, Options{Base: time.Hour}) // Sleep nil = the real one
 	ctx, cancel := context.WithCancel(context.Background())
 	d.Start(ctx)
 	ch := newFake("teams", MarkRetryable(errors.New("down")))
 	d.Enqueue(Job{DeliveryID: 5, Channel: ch, Message: fired()})
-	<-ch.seen // the first attempt happened
+	<-ch.seen // the first attempt happened and failed
 	cancel()
 	d.Wait()
-	if got := ch.calls.Load(); got > 2 {
+	if got := ch.calls.Load(); got != 1 {
 		t.Fatalf("a cancelled dispatcher kept retrying: %d attempts", got)
+	}
+	// Nothing settled: the row stays pending, which is what makes the replay on
+	// the next boot the right thing to do rather than a duplicate.
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.sent) != 0 || len(rec.failed) != 0 {
+		t.Fatalf("a shutdown must settle nothing, sent=%v failed=%v", rec.sent, rec.failed)
 	}
 }
 
@@ -2378,9 +2386,12 @@ func (d *Dispatcher) attemptsUsed(err error) int {
 Run: `go test ./internal/hub/notify/ -race -v`
 Expected: PASS, the whole package.
 
-Note on `TestShutdownStopsRetrying`: `deliver` returns on a cancelled sleep
-without recording anything, which is deliberate. The row stays `pending` and
-Task 7 replays it on the next boot.
+Note on `TestShutdownStopsRetryingAndLeavesTheRowPending`: `deliver` returns on
+a cancelled sleep without recording anything, which is deliberate. The row stays
+`pending` and Task 7 replays it on the next boot. The test uses the real
+`sleepCtx` with an hour-long base so the worker can only leave the backoff by
+cancellation — a fake sleep that merely checks `ctx.Err()` races the test and
+fails under `-count=3`.
 
 - [ ] **Step 5: Commit**
 
