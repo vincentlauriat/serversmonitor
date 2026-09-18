@@ -239,11 +239,12 @@ func (s *Store) PurgeAzure() error {
 	return tx.Commit()
 }
 
-// ExecForTests runs one statement against the database. It exists so a test can
-// break a single table and prove that the read error surfaces instead of being
-// swallowed into an empty result — closing the whole store would make an
-// earlier read fail first and prove nothing about the later one.
-func (s *Store) ExecForTests(query string) error {
-	_, err := s.db.Exec(query)
+// BreakAzureSyncForTests drops the azure_sync table so a test can prove that a
+// failed read of it surfaces instead of being swallowed into an empty map.
+// Narrow on purpose: an ExecForTests taking arbitrary SQL would ship arbitrary
+// statement execution in the production binary. Closing the whole store would
+// not do — an earlier read would fail first and prove nothing about this one.
+func (s *Store) BreakAzureSyncForTests() error {
+	_, err := s.db.Exec("DROP TABLE azure_sync")
 	return err
 }

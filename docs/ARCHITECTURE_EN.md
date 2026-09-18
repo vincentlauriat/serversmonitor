@@ -266,6 +266,12 @@ resets them until they first fire. The kick runs both syncs and realigns both ti
 outcome is broadcast, failures included: an Azure read can take minutes to time out, and a page told
 only about successes sits on "nothing has run yet" for the whole of a failure.
 
+**Both sweeps run off the loop, one goroutine each, guarded by an `atomic.Bool` per scope.** Held
+inline they would stop the hub evaluating rules for minutes, and a ticker buffers one tick, so those
+minutes are dropped rather than caught up. The guard matters as much as the goroutine: two
+overlapping sweeps let the stale view of whichever finishes last mark the other's fresh rows
+deleted, which is the very thing the all-or-nothing transaction exists to prevent.
+
 ## The web layer
 
 REST under `/api/v1`, cookie session, Argon2id password, a rate limiter on login. Live updates are
@@ -308,7 +314,7 @@ database and editable from the interface.
 
 ## Testing
 
-249 Go tests across 13 packages and 45 front-end tests, plus an end-to-end test that runs a real hub
+251 Go tests across 13 packages and 45 front-end tests, plus an end-to-end test that runs a real hub
 and a real agent over a real WebSocket and asserts that an alert reaches a webhook and that the
 delivery is recorded.
 

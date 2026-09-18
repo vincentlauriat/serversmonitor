@@ -7,27 +7,40 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/vincentlauriat/serversmonitor/internal/hub/azure"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/config"
+	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 )
 
 // azureFake serves a token, a catalogue, the two enrichment passes and a cost
 // query. failAfter makes every call fail once that many have succeeded.
 type azureFake struct {
-	srv       *httptest.Server
+	srv *httptest.Server
+	// mu guards calls and failAfter. The inventory and cost sweeps run
+	// concurrently now that they are off the hub's run loop, so two handler
+	// goroutines touch the counter at once.
+	mu        sync.Mutex
 	calls     int
 	failAfter int
 	sites     []string
+	// hold, when set, makes the catalogue call block until it is closed. It
+	// stands in for the real thing this lot has to survive: an Azure endpoint
+	// that takes minutes to time out.
+	hold chan struct{}
 }
 
 func newAzureFake(t *testing.T, sites ...string) *azureFake {
 	f := &azureFake{failAfter: -1, sites: sites}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
 		f.calls++
-		if f.failAfter >= 0 && f.calls > f.failAfter {
+		fail := f.failAfter >= 0 && f.calls > f.failAfter
+		f.mu.Unlock()
+		if fail {
 			w.WriteHeader(http.StatusForbidden)
 			io.WriteString(w, `{"error":{"code":"AuthorizationFailed","message":"does not have authorization"}}`)
 			return
@@ -36,6 +49,9 @@ func newAzureFake(t *testing.T, sites ...string) *azureFake {
 		case strings.Contains(r.URL.Path, "/oauth2/"):
 			io.WriteString(w, `{"token_type":"Bearer","expires_in":3599,"access_token":"tok"}`)
 		case strings.HasSuffix(r.URL.Path, "/resources"):
+			if f.hold != nil {
+				<-f.hold
+			}
 			var parts []string
 			for _, s := range f.sites {
 				parts = append(parts, fmt.Sprintf(
@@ -51,12 +67,17 @@ func newAzureFake(t *testing.T, sites ...string) *azureFake {
 			fmt.Fprintf(w, `{"value":[%s]}`, strings.Join(parts, ","))
 		case strings.Contains(r.URL.Path, "/Microsoft.Web/serverfarms"):
 			io.WriteString(w, `{"value":[]}`)
+		// The cost rows deliberately carry ARM's own casing while the resource
+		// ids elsewhere in this fake are lowercase, because that is the shape
+		// the two real APIs return. Both sides must go through NormalizeID or
+		// the join silently produces every resource twice.
+		//
 		// The real path is ".../providers/Microsoft.CostManagement/query", so the
 		// character before CostManagement is a dot, not a slash. Matching
 		// "/CostManagement/query" answers 404 and the sync reads as broken.
 		case strings.Contains(r.URL.Path, "CostManagement/query"):
 			io.WriteString(w, `{"properties":{"columns":[{"name":"Cost"},{"name":"ResourceId"},{"name":"Currency"}],
-			 "rows":[[3.5,"/subscriptions/sub/resourcegroups/rg/providers/microsoft.web/sites/a","EUR"],
+			 "rows":[[3.5,"/subscriptions/SUB/resourceGroups/RG/providers/Microsoft.Web/sites/a","EUR"],
 			         [9.0,"/subscriptions/sub/resourcegroups/rg/providers/microsoft.insights/components/long-gone","EUR"]]}}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -64,6 +85,13 @@ func newAzureFake(t *testing.T, sites ...string) *azureFake {
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+// failsFrom makes every call after the nth fail, counting from now.
+func (f *azureFake) failsFrom(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls, f.failAfter = 0, n
 }
 
 func azureHub(t *testing.T, f *azureFake) *Hub {
@@ -114,8 +142,7 @@ func TestAFailedSyncKeepsTheLastGoodInventory(t *testing.T) {
 		t.Fatalf("fixture did not land: %d", len(rs))
 	}
 
-	f.failAfter = 0 // everything fails from now on
-	f.calls = 0
+	f.failsFrom(0) // everything fails from now on
 	h.syncAzureInventory(context.Background())
 
 	rs, _ := h.st.ListAzureResources()
@@ -142,8 +169,7 @@ func TestAPartialSyncIsAFailedSync(t *testing.T) {
 	f := newAzureFake(t, "a", "b")
 	h := azureHub(t, f)
 	h.syncAzureInventory(context.Background())
-	f.calls = 0
-	f.failAfter = 2 // token and catalogue succeed, enrichment does not
+	f.failsFrom(2) // token and catalogue succeed, enrichment does not
 	h.syncAzureInventory(context.Background())
 	rs, _ := h.st.ListAzureResources()
 	for _, r := range rs {
@@ -210,8 +236,7 @@ func TestTestAzureReturnsAzuresOwnWords(t *testing.T) {
 	if err := h.TestAzure(context.Background()); err != nil {
 		t.Fatalf("a working configuration must test clean: %v", err)
 	}
-	f.failAfter = 1 // the token works, the catalogue does not
-	f.calls = 0
+	f.failsFrom(1) // the token works, the catalogue does not
 	err := h.TestAzure(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "authorization") {
 		t.Fatalf("err = %v", err)
@@ -311,7 +336,7 @@ func TestAFailedSyncIsBroadcastToo(t *testing.T) {
 	events, stop := h.bus.Subscribe()
 	defer stop()
 
-	f.failAfter = 0
+	f.failsFrom(0)
 	h.syncAzureInventory(context.Background())
 
 	for {
@@ -324,4 +349,84 @@ func TestAFailedSyncIsBroadcastToo(t *testing.T) {
 			t.Fatal("no azure event after a failed sync")
 		}
 	}
+}
+
+// The cost query and the catalogue disagree about case: ARM answers
+// "resourceGroups" and "Microsoft.Web", Cost Management answers "resourcegroups"
+// and "microsoft.web". Both sides go through NormalizeID, and this is what says
+// so — every other test builds the two sides from one literal and would pass
+// with the normalisation removed from either side.
+func TestCostJoinsInventoryDespiteAzureDisagreeingAboutCase(t *testing.T) {
+	f := newAzureFake(t, "a")
+	h := azureHub(t, f)
+	h.syncAzureInventory(context.Background())
+	h.syncAzureCosts(context.Background())
+
+	rs, err := h.st.ListAzureResources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rs) != 1 {
+		t.Fatalf("got %d resources", len(rs))
+	}
+	cs, err := h.st.ListAzureCosts(currentPeriod(time.Now().UTC()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var matched bool
+	for _, c := range cs {
+		if c.ResourceID == rs[0].ID {
+			matched = true
+		}
+	}
+	if !matched {
+		t.Fatalf("no cost row joins %q; cost ids = %v", rs[0].ID, ids(cs))
+	}
+}
+
+func ids(cs []store.AzureCost) []string {
+	out := make([]string, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, c.ResourceID)
+	}
+	return out
+}
+
+// An Azure read can take minutes. Run is one goroutine, so a sync done inline
+// stops the hub evaluating alerts for the whole of it — and a ticker buffers one
+// tick, so the missed minutes are dropped rather than queued.
+func TestASlowSyncDoesNotBlockTheRunLoop(t *testing.T) {
+	f := newAzureFake(t, "a")
+	f.hold = make(chan struct{})
+	defer close(f.hold)
+
+	h, err := New(config.Config{DataDir: t.TempDir()}, "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { h.Close() })
+	h.azureBase = f.srv.URL
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.Run(ctx) //nolint:errcheck // Run returns ctx.Err() on cancel
+
+	if err := azure.SaveConfig(h.st, azure.Config{Mode: "client_secret", TenantID: "t",
+		ClientID: "c", ClientSecret: "s", SubscriptionID: "SUB", ResourceGroups: []string{"RG"},
+		InventoryEveryMin: 15, CostEveryMin: 60}); err != nil {
+		t.Fatal(err)
+	}
+	h.ReloadAzure() // kicks; the catalogue call now blocks
+
+	// A second kick proves the loop came back to its select. Held inline, it
+	// would sit unread in the one-slot buffer until the fake was released.
+	time.Sleep(100 * time.Millisecond)
+	h.kickAzure()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(h.akick) == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("the run loop never drained the second kick: it is blocked inside a sync")
 }

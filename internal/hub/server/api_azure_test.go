@@ -431,7 +431,7 @@ func TestBudgetIsReportedOnceNotPerCurrency(t *testing.T) {
 // this field to decide what an empty table means.
 func TestUnreadableSyncStateIsAnErrorNotAnEmptyMap(t *testing.T) {
 	r := newAzureRig(t)
-	if err := r.st.ExecForTests("DROP TABLE azure_sync"); err != nil {
+	if err := r.st.BreakAzureSyncForTests(); err != nil {
 		t.Fatal(err)
 	}
 	resp, data := r.do(t, "GET", "/api/v1/azure", nil)

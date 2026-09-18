@@ -76,6 +76,39 @@ func (h *Hub) azureReady() (azure.Config, *azure.Client, bool) {
 	return *cp, cl, true
 }
 
+// goSyncAzure runs both sweeps off the run loop. Never inline: an Azure read
+// takes minutes when the credential endpoint is unreachable, and Run is one
+// goroutine — held there, the hub evaluates no rules and dispatches no
+// notifications for the whole of it. A ticker buffers one tick, so those
+// minutes are dropped rather than caught up.
+func (h *Hub) goSyncAzure(ctx context.Context) {
+	h.goSyncAzureInventory(ctx)
+	h.goSyncAzureCosts(ctx)
+}
+
+// goSyncAzureInventory starts a sweep unless one is already running. A second
+// concurrent sweep is worse than a skipped one: the stale view of whichever
+// finishes last would mark the other's fresh rows deleted.
+func (h *Hub) goSyncAzureInventory(ctx context.Context) {
+	if !h.ainv.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer h.ainv.Store(false)
+		h.syncAzureInventory(ctx)
+	}()
+}
+
+func (h *Hub) goSyncAzureCosts(ctx context.Context) {
+	if !h.acost.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer h.acost.Store(false)
+		h.syncAzureCosts(ctx)
+	}()
+}
+
 // syncAzureInventory replaces the inventory, but only when every call in the
 // sweep succeeded. A partial read would be swept as a batch of deletions, and
 // "I cannot see Azure" would render as "the sandbox is empty".

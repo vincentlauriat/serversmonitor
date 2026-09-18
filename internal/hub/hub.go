@@ -41,6 +41,13 @@ type Hub struct {
 	// rather than at the next tick. Buffered and sent to without blocking: a
 	// reload must never wait on a loop that is not running yet.
 	akick chan struct{}
+	// One guard per scope. An Azure sweep runs off the loop, so two of them can
+	// otherwise overlap — and two interleaved ReplaceAzureInventory
+	// transactions let one sweep's stale view mark the other's fresh rows
+	// deleted, which is exactly what the all-or-nothing transaction exists to
+	// prevent.
+	ainv  atomic.Bool
+	acost atomic.Bool
 
 	dispatch *notify.Dispatcher
 	ncfg     atomic.Pointer[notify.Config]
@@ -112,10 +119,7 @@ func (h *Hub) Run(ctx context.Context) error {
 	case <-h.akick:
 	default:
 	}
-	go func() { // catch up at boot without delaying the first metric tick
-		h.syncAzureInventory(ctx)
-		h.syncAzureCosts(ctx)
-	}()
+	h.goSyncAzure(ctx) // catch up at boot without delaying the first metric tick
 	fast := time.NewTicker(h.interval())
 	minute := time.NewTicker(time.Minute)
 	hour := time.NewTicker(time.Hour)
@@ -136,15 +140,14 @@ func (h *Hub) Run(ctx context.Context) error {
 			// The settings changed. Sync now, and realign both tickers: they
 			// were built with whatever cadence was in force at boot, which for
 			// an integration that was off is one hour.
-			h.syncAzureInventory(ctx)
-			h.syncAzureCosts(ctx)
+			h.goSyncAzure(ctx)
 			azureInv.Reset(h.azureInterval("inventory"))
 			azureCost.Reset(h.azureInterval("cost"))
 		case <-azureInv.C:
-			h.syncAzureInventory(ctx)
+			h.goSyncAzureInventory(ctx)
 			azureInv.Reset(h.azureInterval("inventory"))
 		case <-azureCost.C:
-			h.syncAzureCosts(ctx)
+			h.goSyncAzureCosts(ctx)
 			azureCost.Reset(h.azureInterval("cost"))
 		case <-hour.C:
 			h.hourly()

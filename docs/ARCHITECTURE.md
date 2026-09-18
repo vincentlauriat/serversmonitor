@@ -275,6 +275,13 @@ réaligne les deux tickers. Chaque issue est diffusée, les échecs compris : un
 mettre des minutes à expirer, et une page qu'on n'informe que des succès reste figée sur « rien n'a
 encore tourné » pendant toute la durée d'un échec.
 
+**Les deux balayages tournent hors de la boucle, une goroutine chacun, gardés par un `atomic.Bool`
+par périmètre.** Tenus en ligne, ils empêcheraient le hub d'évaluer ses règles pendant des minutes,
+et comme un ticker ne met qu'un tick en tampon, ces minutes sont perdues et non rattrapées. La garde
+compte autant que la goroutine : deux balayages qui se chevauchent laissent la vue périmée du
+dernier arrivé marquer supprimées les lignes fraîches de l'autre — précisément ce que la transaction
+tout-ou-rien existe pour empêcher.
+
 ## La couche web
 
 REST sous `/api/v1`, session par cookie, mot de passe en Argon2id, limiteur sur la connexion. Les
@@ -318,7 +325,7 @@ est dans la base et éditable depuis l'interface.
 
 ## Tests
 
-249 tests Go sur 13 paquets et 45 tests front, plus un test bout en bout qui lance un vrai hub et un
+251 tests Go sur 13 paquets et 45 tests front, plus un test bout en bout qui lance un vrai hub et un
 vrai agent sur un vrai WebSocket et vérifie qu'une alerte atteint un webhook et que la livraison est
 enregistrée.
 
