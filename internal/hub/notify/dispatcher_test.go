@@ -11,16 +11,18 @@ import (
 
 // recorder records what the dispatcher decided, which is the whole contract.
 type recorder struct {
-	mu     sync.Mutex
-	sent   map[int64]int
-	failed map[int64]string
-	done   chan struct{}
-	want   int
-	seen   int
+	mu       sync.Mutex
+	sent     map[int64]int
+	failed   map[int64]string
+	attempts map[int64]int // attempts recorded on failure
+	done     chan struct{}
+	want     int
+	seen     int
 }
 
 func newRecorder(want int) *recorder {
-	return &recorder{sent: map[int64]int{}, failed: map[int64]string{}, done: make(chan struct{}), want: want}
+	return &recorder{sent: map[int64]int{}, failed: map[int64]string{}, attempts: map[int64]int{},
+		done: make(chan struct{}), want: want}
 }
 
 // settle is called with the lock held.
@@ -43,6 +45,7 @@ func (r *recorder) MarkDeliveryFailed(id int64, _ time.Time, attempts int, reaso
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.failed[id] = reason
+	r.attempts[id] = attempts
 	r.settle()
 	return nil
 }
@@ -315,5 +318,52 @@ func TestBackoffSchedule(t *testing.T) {
 		if got := d.Backoff(attempt); got != want {
 			t.Errorf("Backoff(%d) = %s, want %s", attempt, got, want)
 		}
+	}
+}
+
+func TestMixedFailuresRecordTheAttemptsThatHappened(t *testing.T) {
+	// A 503 then a 400: two attempts happened, and the log must say two. Deriving
+	// the count from the last error's class reports one, because the last error
+	// is the one that is not retryable. The delivery log is the artifact this
+	// whole lot exists to produce; a number in it that is sometimes false is
+	// worse than no number.
+	rec := newRecorder(1)
+	var mu sync.Mutex
+	var slept []time.Duration
+	d := NewDispatcher(rec, testOptions(&slept, &mu))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.Start(ctx)
+	ch := newFake("webhook", MarkRetryable(errors.New("503")), errors.New("400 Bad Request"))
+	d.Enqueue(Job{DeliveryID: 21, Channel: ch, Message: fired()})
+	rec.wait(t)
+	if got := ch.calls.Load(); got != 2 {
+		t.Fatalf("channel called %d times, want 2", got)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if rec.attempts[21] != 2 {
+		t.Fatalf("recorded attempts = %d, want the 2 that actually happened", rec.attempts[21])
+	}
+	if rec.failed[21] != "400 Bad Request" {
+		t.Fatalf("reason = %q, want the last error", rec.failed[21])
+	}
+}
+
+func TestPermanentFailureRecordsOneAttempt(t *testing.T) {
+	rec := newRecorder(1)
+	var mu sync.Mutex
+	var slept []time.Duration
+	d := NewDispatcher(rec, testOptions(&slept, &mu))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.Start(ctx)
+	ch := newFake("smtp", errors.New("550 no such user"))
+	d.Enqueue(Job{DeliveryID: 23, Channel: ch, Message: fired()})
+	rec.wait(t)
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if rec.attempts[23] != 1 {
+		t.Fatalf("recorded attempts = %d, want 1", rec.attempts[23])
 	}
 }
