@@ -181,10 +181,15 @@ func (d *Dispatcher) Wait() { <-d.done }
 
 func (d *Dispatcher) deliver(ctx context.Context, j Job) {
 	var last error
+	// used counts what actually happened, rather than being reconstructed from
+	// the last error's class afterwards: a 503 followed by a 400 is two attempts,
+	// and deriving the count from the final, non-retryable error would log one.
+	used := 0
 	for attempt := 1; attempt <= d.opt.Attempts; attempt++ {
+		used = attempt
 		err := j.Channel.Send(ctx, j.Message)
 		if err == nil {
-			if err := d.rec.MarkDeliverySent(j.DeliveryID, d.opt.Now(), attempt); err != nil {
+			if err := d.rec.MarkDeliverySent(j.DeliveryID, d.opt.Now(), used); err != nil {
 				d.opt.Log.Error("record sent delivery", "err", err)
 			}
 			return
@@ -198,17 +203,9 @@ func (d *Dispatcher) deliver(ctx context.Context, j Job) {
 			return
 		}
 	}
-	d.opt.Log.Warn("notification failed", "channel", j.Channel.Name(),
-		"host", j.Message.HostName, "kind", j.Message.Kind, "err", last)
-	if err := d.rec.MarkDeliveryFailed(j.DeliveryID, d.opt.Now(), d.attemptsUsed(last), truncate(last.Error(), 200)); err != nil {
+	d.opt.Log.Warn("notification failed", "channel", j.Channel.Name(), "host", j.Message.HostName,
+		"kind", j.Message.Kind, "attempts", used, "err", last)
+	if err := d.rec.MarkDeliveryFailed(j.DeliveryID, d.opt.Now(), used, truncate(last.Error(), 200)); err != nil {
 		d.opt.Log.Error("record failed delivery", "err", err)
 	}
-}
-
-// attemptsUsed is 1 for a permanent failure, the full budget otherwise.
-func (d *Dispatcher) attemptsUsed(err error) int {
-	if Retryable(err) {
-		return d.opt.Attempts
-	}
-	return 1
 }

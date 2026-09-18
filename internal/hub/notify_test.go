@@ -225,3 +225,73 @@ func TestMessageCarriesTheRuleThreshold(t *testing.T) {
 		t.Fatalf("the status rule has no threshold, got %v", off.Threshold)
 	}
 }
+
+func TestOneTransitionWritesOneDeliveryPerChannel(t *testing.T) {
+	// The fan-out itself, asserted before the worker settles anything: a `break`
+	// where the loop has `continue`, or a reused delivery id, would leave the
+	// rest of the suite green. The dispatcher is deliberately not started.
+	c := newCatcher(t)
+	h := newTestHub(t)
+	if err := notify.SaveConfig(h.st, notify.Config{
+		// SMTP points at a port nothing listens on: this test is about the rows
+		// that get written, not about whether they are delivered.
+		SMTP:    notify.SMTPConfig{Enabled: true, Host: "127.0.0.1", Port: 1, From: "f@example", To: []string{"a@example"}, TLSMode: "none"},
+		Webhook: notify.WebhookConfig{Enabled: true, URL: c.srv.URL},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.ReloadNotify()
+	if n := len(*h.channels.Load()); n != 2 {
+		t.Fatalf("two channels must be enabled, got %d", n)
+	}
+
+	host, _, _ := h.st.CreateHost("pi", time.Now().UTC())
+	saved, _ := h.st.InsertAlertEvent(store.AlertEvent{HostID: host.ID, Metric: "cpu",
+		Kind: "fired", Value: 99, At: time.Now().UTC()})
+	h.notify([]store.AlertEvent{saved})
+
+	ds, err := h.st.ListDeliveries(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ds) != 2 {
+		t.Fatalf("one transition on two channels owes two deliveries, got %d: %+v", len(ds), ds)
+	}
+	seenID := map[int64]bool{}
+	seenChannel := map[string]bool{}
+	for _, d := range ds {
+		if seenID[d.ID] {
+			t.Fatalf("two deliveries share id %d", d.ID)
+		}
+		if seenChannel[d.Channel] {
+			t.Fatalf("channel %s got two rows for one transition", d.Channel)
+		}
+		if d.EventID != saved.ID {
+			t.Fatalf("delivery %d points at event %d, want %d", d.ID, d.EventID, saved.ID)
+		}
+		seenID[d.ID], seenChannel[d.Channel] = true, true
+	}
+	if !seenChannel["smtp"] || !seenChannel["webhook"] {
+		t.Fatalf("channels = %v, want one row each for smtp and webhook", seenChannel)
+	}
+}
+
+func TestTwoTransitionsWriteFourDeliveries(t *testing.T) {
+	// Two events, two channels. Guards the outer loop the same way.
+	c := newCatcher(t)
+	h := newTestHub(t)
+	notify.SaveConfig(h.st, notify.Config{
+		SMTP:    notify.SMTPConfig{Enabled: true, Host: "127.0.0.1", Port: 1, From: "f@example", To: []string{"a@example"}, TLSMode: "none"},
+		Webhook: notify.WebhookConfig{Enabled: true, URL: c.srv.URL},
+	})
+	h.ReloadNotify()
+	h1, _, _ := h.st.CreateHost("pi", time.Now().UTC())
+	h2, _, _ := h.st.CreateHost("mac", time.Now().UTC())
+	e1, _ := h.st.InsertAlertEvent(store.AlertEvent{HostID: h1.ID, Metric: "cpu", Kind: "fired", Value: 99, At: time.Now().UTC()})
+	e2, _ := h.st.InsertAlertEvent(store.AlertEvent{HostID: h2.ID, Metric: "memory", Kind: "resolved", Value: 10, At: time.Now().UTC()})
+	h.notify([]store.AlertEvent{e1, e2})
+	ds, _ := h.st.ListDeliveries(10)
+	if len(ds) != 4 {
+		t.Fatalf("two transitions on two channels owe four deliveries, got %d", len(ds))
+	}
+}
