@@ -7,12 +7,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/vincentlauriat/serversmonitor/deploy"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/alerts"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/config"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/ingest"
+	"github.com/vincentlauriat/serversmonitor/internal/hub/notify"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/server"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/webdist"
@@ -26,6 +28,12 @@ type Hub struct {
 	agents  *ingest.Handler
 	machine *alerts.Machine
 	handler http.Handler
+
+	// Notification state. An atomic pointer rather than a mutex: the settings
+	// handler swaps the whole configuration, the evaluator only ever reads it.
+	dispatch *notify.Dispatcher
+	ncfg     atomic.Pointer[notify.Config]
+	channels atomic.Pointer[[]notify.Channel]
 }
 
 func New(cfg config.Config, version string, log *slog.Logger) (*Hub, error) {
@@ -64,7 +72,9 @@ func New(cfg config.Config, version string, log *slog.Logger) (*Hub, error) {
 	icfg.IntervalSec = st.SettingInt("agent_interval_sec", 10)
 	agents := ingest.New(st, bus, icfg, log.With("component", "ingest"))
 	h := &Hub{cfg: cfg, log: log, st: st, bus: bus, agents: agents, machine: machine}
-	h.handler = server.New(server.Deps{Store: st, Agents: agents, Bus: bus, Static: webdist.Build(), InstallScript: deploy.InstallScript,
+	h.dispatch = notify.NewDispatcher(st, notify.Options{Log: log.With("component", "notify")})
+	h.ReloadNotify()
+	h.handler = server.New(server.Deps{Store: st, Agents: agents, Bus: bus, Notify: h, Static: webdist.Build(), InstallScript: deploy.InstallScript,
 		Version: version, Log: log.With("component", "server"), Secure: cfg.Secure})
 	return h, nil
 }
@@ -79,6 +89,8 @@ func (h *Hub) interval() time.Duration {
 
 // Run executes the periodic jobs until ctx is cancelled.
 func (h *Hub) Run(ctx context.Context) error {
+	h.dispatch.Start(ctx)
+	h.replayPendingDeliveries()
 	fast := time.NewTicker(h.interval())
 	minute := time.NewTicker(time.Minute)
 	hour := time.NewTicker(time.Hour)
@@ -137,14 +149,18 @@ func (h *Hub) evaluate() {
 		}
 	}
 	events := alerts.Evaluate(h.machine, alerts.Input{Now: now, Interval: h.interval(), Hosts: hosts, Latest: latest, Rules: rules})
+	var saved []store.AlertEvent
 	for _, e := range events {
-		if _, err := h.st.InsertAlertEvent(e); err != nil {
+		stored, err := h.st.InsertAlertEvent(e)
+		if err != nil {
 			h.log.Error("insert alert event", "err", err)
 			continue
 		}
+		saved = append(saved, stored)
 		h.log.Info("alert", "kind", e.Kind, "metric", e.Metric, "host_id", e.HostID, "value", e.Value)
 		h.bus.Publish("alert", map[string]any{"host_id": e.HostID, "metric": e.Metric, "kind": e.Kind, "value": e.Value})
 	}
+	h.notify(saved)
 }
 
 func (h *Hub) hourly() {
@@ -157,5 +173,8 @@ func (h *Hub) hourly() {
 	}
 	if err := h.st.PurgeSessions(now); err != nil {
 		h.log.Error("purge sessions", "err", err)
+	}
+	if err := h.st.PurgeDeliveries(now, 30*24*time.Hour); err != nil {
+		h.log.Error("purge deliveries", "err", err)
 	}
 }

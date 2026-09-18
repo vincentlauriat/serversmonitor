@@ -32,6 +32,7 @@ type rig struct {
 	client *http.Client
 	bus    *Broadcaster
 	agents *fakeAgents
+	notify Notifier
 	now    time.Time
 }
 
@@ -42,8 +43,9 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	static := fstest.MapFS{"index.html": {Data: []byte("<html>app</html>")}, "_app/x.js": {Data: []byte("js")}}
-	r := &rig{st: st, bus: NewBroadcaster(), agents: &fakeAgents{}, now: time.Date(2026, 9, 17, 10, 0, 0, 0, time.UTC)}
-	h := New(Deps{Store: st, Agents: r.agents, Bus: r.bus, Static: fs.FS(static), InstallScript: []byte("#!/bin/sh\necho hi\n"),
+	r := &rig{st: st, bus: NewBroadcaster(), agents: &fakeAgents{}, notify: &fakeNotifier{},
+		now: time.Date(2026, 9, 17, 10, 0, 0, 0, time.UTC)}
+	h := New(Deps{Store: st, Agents: r.agents, Bus: r.bus, Notify: r.notify, Static: fs.FS(static), InstallScript: []byte("#!/bin/sh\necho hi\n"),
 		Now: func() time.Time { return r.now }, Version: "test", Log: slog.Default(), SessionTTL: time.Hour})
 	r.srv = httptest.NewServer(h)
 	jar, _ := cookiejar.New(nil)

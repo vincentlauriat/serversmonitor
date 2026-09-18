@@ -3192,24 +3192,39 @@ func TestEmptyPasswordClearsIt(t *testing.T) {
 }
 
 func TestInvalidConfigIsRejectedWithItsReason(t *testing.T) {
-	r := newNotifyRig(t)
-	cases := map[string]map[string]any{
-		"smtp with no recipient": {"smtp_enabled": true, "smtp_host": "h", "smtp_port": 25,
-			"smtp_from": "f", "smtp_to": []string{}, "smtp_tls": "none"},
-		"teams over http":      {"teams_enabled": true, "teams_url": "http://example/x"},
-		"public url not a url": {"public_url": "hub.example"},
+	// Each case checks its own setting immediately after its own rejected save.
+	// Checking once at the end would not catch a handler that writes before
+	// validating: a later case overwrites the key with an empty value and the
+	// assertion passes for the wrong reason. Verified by mutation.
+	cases := []struct {
+		name string
+		body map[string]any
+		key  string // the setting this case would have written
+	}{
+		{"smtp with no recipient", map[string]any{"smtp_enabled": true, "smtp_host": "h",
+			"smtp_port": 25, "smtp_from": "f", "smtp_to": []string{}, "smtp_tls": "none"}, "notify_smtp_host"},
+		{"teams over http", map[string]any{"teams_enabled": true,
+			"teams_url": "http://example/x"}, "notify_teams_url"},
+		{"public url not a url", map[string]any{"public_url": "hub.example"}, "notify_public_url"},
+		{"bad tls mode", map[string]any{"smtp_enabled": true, "smtp_host": "h", "smtp_port": 25,
+			"smtp_from": "f", "smtp_to": []string{"a@example"}, "smtp_tls": "ssl"}, "notify_smtp_host"},
 	}
-	for name, body := range cases {
-		resp, data := r.do(t, "PUT", "/api/v1/notifications", body)
+	for _, c := range cases {
+		r := newNotifyRig(t) // a fresh store per case, so nothing leaks between them
+		resp, data := r.do(t, "PUT", "/api/v1/notifications", c.body)
 		if resp.StatusCode != http.StatusBadRequest {
-			t.Errorf("%s: code = %d, want 400 (%s)", name, resp.StatusCode, data)
+			t.Errorf("%s: code = %d, want 400 (%s)", c.name, resp.StatusCode, data)
+			continue
 		}
-	}
-	if n := r.notifier(t).reloads; n != 0 {
-		t.Fatalf("a rejected save must not reload anything, reloads = %d", n)
-	}
-	if v, _, _ := r.st.GetSetting("notify_teams_url"); v != "" {
-		t.Fatalf("a rejected save must write nothing, teams url = %q", v)
+		if len(data) < 10 {
+			t.Errorf("%s: the reason must reach the browser, got %q", c.name, data)
+		}
+		if v, ok, _ := r.st.GetSetting(c.key); ok && v != "" {
+			t.Errorf("%s: a rejected save must write nothing, %s = %q", c.name, c.key, v)
+		}
+		if n := r.notifier(t).reloads; n != 0 {
+			t.Errorf("%s: a rejected save must not reload anything, reloads = %d", c.name, n)
+		}
 	}
 }
 
