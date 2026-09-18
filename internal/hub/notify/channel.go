@@ -52,6 +52,17 @@ func (c Config) Link(hostID int64) string {
 	return strings.TrimSuffix(c.Public, "/") + "/hosts/" + strconv.FormatInt(hostID, 10)
 }
 
+// Root is the dashboard URL, or "" when no public URL is configured. Used by
+// the test message, which belongs to no host: Link(0) would point at a host
+// page that does not exist, and a link that goes somewhere wrong is worse than
+// no link at all.
+func (c Config) Root() string {
+	if c.Public == "" {
+		return ""
+	}
+	return strings.TrimSuffix(c.Public, "/")
+}
+
 // Validate refuses a configuration at save time rather than at 3 a.m.
 func (c Config) Validate() error {
 	if c.Public != "" {

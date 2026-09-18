@@ -121,7 +121,7 @@ func (h *Hub) TestNotify(ctx context.Context, name string) error {
 		cfg := *h.ncfg.Load()
 		return ch.Send(ctx, notify.Message{
 			HostName: "serversmonitor", Metric: "cpu", Kind: "fired", Value: 99.9,
-			Threshold: 90, Duration: 10 * time.Minute, At: time.Now().UTC(), Link: cfg.Link(0),
+			Threshold: 90, Duration: 10 * time.Minute, At: time.Now().UTC(), Link: cfg.Root(),
 		})
 	}
 	return fmt.Errorf("channel %s is not enabled", name)

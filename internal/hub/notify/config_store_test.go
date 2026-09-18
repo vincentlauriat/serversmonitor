@@ -2,6 +2,7 @@ package notify
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -85,5 +86,21 @@ func TestLinkIsEmptyWithoutAPublicURL(t *testing.T) {
 	}
 	if got := (Config{Public: "https://hub.example/"}).Link(3); got != "https://hub.example/hosts/3" {
 		t.Fatalf("link = %q", got)
+	}
+}
+
+func TestRootIsTheDashboardNotAHostPage(t *testing.T) {
+	// The test message belongs to no host. Link(0) would send the reader to
+	// /hosts/0, a page that does not exist — caught by hand against a running
+	// hub, not by a test, which is why this one now exists.
+	c := Config{Public: "https://hub.example/"}
+	if got := c.Root(); got != "https://hub.example" {
+		t.Fatalf("root = %q", got)
+	}
+	if strings.Contains(c.Root(), "/hosts/") {
+		t.Fatalf("the dashboard link must not point at a host page: %q", c.Root())
+	}
+	if got := (Config{}).Root(); got != "" {
+		t.Fatalf("no public url means no link, got %q", got)
 	}
 }

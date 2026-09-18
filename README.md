@@ -63,10 +63,38 @@ make test         # go test ./...
 make release      # linux/amd64, linux/arm64, darwin/arm64 in release/
 ```
 
-## What lot 1 does not do
+## Notifications
 
-- **No notifications.** Alerts show in the interface; e-mail, ntfy and Teams come in lot 2.
+Every `fired` and `resolved` transition is sent to whichever channels are enabled under
+**Settings → Notifications**. Nothing else is: a threshold crossing that does not change state
+produces no message, and a muted host produces none at all.
+
+| Channel | What it needs |
+|---|---|
+| Email | An SMTP server, a port, a sender and at least one recipient. STARTTLS, implicit TLS or plain. |
+| Webhook | Any URL. A JSON body carries the host, metric, value, threshold and a link; ntfy also reads the title and priority from headers, which are sent too. Extra headers are configurable, for a bearer token. |
+| Microsoft Teams | The HTTP URL of a Power Automate workflow using the *When a Teams webhook request is received* trigger. |
+
+Set **Public URL of this hub** so each message links back to the host page. Left empty, messages
+carry no link at all: a link pointing at the wrong place is worse than none.
+
+**Delivery is at least once.** A failed send is retried after 1 s, 5 s and 25 s, and the outcome of
+every attempt is recorded in the delivery log below the settings. Because the intent to deliver is
+written before the first attempt, a hub that crashes between a successful send and recording it will
+repeat that message when it restarts. A duplicate e-mail is a nuisance; a lost alert is the failure
+this exists to prevent.
+
+Each channel has a **Send test** button that reports the channel's own error, not a generic failure.
+
+⚠️ **Teams is not verified against a live tenant.** The payload is asserted byte for byte against the
+Adaptive Card contract Microsoft documents, and the HTTP behaviour is tested, but no message has been
+delivered to a real Teams channel from this code. Office 365 connector URLs
+(`outlook.office.com/webhook/…`) stopped working in May 2026 and are not supported.
+
+## What lot 2 does not do
+
 - **No Azure.** Reading and managing an Azure sandbox resource group is lots 3 to 6.
+- **No per-rule routing.** Every enabled channel receives every transition. Mute a host to silence it.
 - **One user.** A single local admin account; Entra ID is deferred.
 - **No TLS of its own.** Put a reverse proxy in front for anything but localhost.
 
@@ -75,8 +103,8 @@ make release      # linux/amd64, linux/arm64, darwin/arm64 in release/
 | Lot | Content | State |
 |---|---|---|
 | 1 | Hub, agent, web UI, alerts | **done** |
-| 2 | Alert channels: SMTP, webhook / ntfy, Teams | next |
-| 3 | Azure read: inventory, state, costs vs budget | |
+| 2 | Alert channels: SMTP, webhook / ntfy, Teams | **done** |
+| 3 | Azure read: inventory, state, costs vs budget | next |
 | 4 | Azure actions: start, stop, restart | |
 | 5 | VM provisioning with the agent pre-installed | |
 | 6 | Cost guardrails: schedules, orphans, budget alerts | |
@@ -86,4 +114,5 @@ make release      # linux/amd64, linux/arm64, darwin/arm64 in release/
 The design and the implementation plan live in `docs/superpowers/`. They record the decisions and,
 more usefully, the things that only showed up against real data — a Mac reporting eight mount points
 of which seven are noise, thirty-nine temperature sensors, a hub exiting 0 on a port that was already
-taken.
+taken, a duration formatter that turned `10m` into `1`, and a test notification that linked to a host
+that does not exist.
