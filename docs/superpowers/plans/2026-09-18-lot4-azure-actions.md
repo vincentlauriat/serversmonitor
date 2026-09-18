@@ -104,7 +104,9 @@ func ReadState(ctx context.Context, c *Client, resourceID, resourceType string) 
 
 - [ ] **Step 1: Write the failing tests**
 
-- `TestDoCallsTheRightURL` — for each of the three actions, the fake ARM records `r.Method`, `r.URL.Path` and the `api-version`. Expect `POST /subscriptions/s/resourceGroups/rg/providers/Microsoft.Web/sites/app/start?api-version=2023-12-01`. The path is built from the resource id, so **the id's own casing is preserved in the URL** while the stored id stays lowercased.
+- `TestDoCallsTheRightURL` — for each of the three actions, the fake ARM records `r.Method`, `r.URL.Path` and the `api-version`. Expect `POST /subscriptions/s/resourceGroups/rg/providers/Microsoft.Web/sites/app/start?api-version=2023-12-01`, **with ARM's own casing**.
+
+  This is why task 3 adds an `arm_id` column. `azure_resources.id` went through `NormalizeID` (`inventory.go:31`) and is lowercase; ARM's mixed-case id was never kept. Building the action URL from the lowercased id would mean betting that every segment of an ARM path is case-insensitive — probably true, unverifiable here, and discovered at the one moment that matters: the first real action after the administrator unblocks the credential. One column removes the bet. `Do` uses `arm_id` when it is set and falls back to the normalized id for rows written before this migration, which the next hourly sync refills anyway.
 - `TestUnknownTypeIsNotActionable` — `Supports("microsoft.web/serverfarms", ActionStop)` is false, and `Do` on one returns an error naming the type without ever opening a connection. An App Service *Plan* is not a site; stopping one is not a thing.
 - `TestA429IsRetried` — two 429s then a 200; the fake sees three calls, the waits are 1 s and 5 s.
 - `TestA500IsNotRetried` — **the load-bearing test of this lot.** The fake counts calls; after a 500, `Do` returns an error and the fake has been called **once**. A comment in the test says why: the stop may already have happened.
@@ -116,7 +118,9 @@ func ReadState(ctx context.Context, c *Client, resourceID, resourceType string) 
 
 `Do` builds the path from the id, calls a client method that uses the **429-only** retry predicate, and discards the body (App Services answer 200 with nothing). `ReadState` calls `Get` on the typed provider path with `api-version=2023-12-01` and reads `properties.state`, reusing the shape already declared in `inventory.go` rather than a second copy.
 
-For the retry policy, add to `Options` a predicate rather than a boolean — `Retry func(error) bool`, defaulting to `Retryable` — and pass the 429-only one from `Do`. A boolean named `noRetry5xx` would have to be re-read backwards at every call site.
+**The retry policy is per call, not per client.** It cannot live in `Options`: `Options` is fixed at `NewClient`, and `hub.go:38` holds a single `aclient atomic.Pointer[azure.Client]` shared by the inventory sweep, the cost sweep and now the actions. Mutating its `Options` to weaken the retry for one call is a live data race against a sweep in flight — and leaving it weakened would flip lot 3's `TestGetAllGivesUpAfterTheAttemptBudget`.
+
+So: extract an unexported `doWith(ctx, method, rawURL, body []byte, retry func(error) bool)`; `do` delegates to it with `Retryable` (the read path is untouched, byte for byte); `PostAction` delegates to it with the 429-only predicate. One shared client, two policies, no shared mutable state.
 
 - [ ] **Step 3: Verify** — `go test ./internal/hub/azure/...`.
 
@@ -157,6 +161,12 @@ var ErrActionInFlight = errors.New("store: an action is already running on this 
 - [ ] **Step 1: The migration**
 
 ```sql
+-- ARM's own casing, kept because the action URL is built from it. Empty for
+-- rows written before this migration; the next sync fills them in.
+ALTER TABLE azure_resources ADD COLUMN arm_id TEXT NOT NULL DEFAULT '';
+```
+
+```sql
 CREATE TABLE azure_actions (
   id            INTEGER PRIMARY KEY,
   resource_id   TEXT NOT NULL,          -- lowercased, as in azure_resources
@@ -188,6 +198,10 @@ No foreign key to `azure_resources`, and `resource_name` copied, for the reason 
 - `TestInterruptedOnStartup` — two rows (`pending`, `running`) plus one `succeeded`; `InterruptAzureActions` returns 2, marks exactly those two `interrupted`, leaves `state_after` `NULL`, and does not touch the third.
 - `TestListIsMostRecentFirstAndLimited`.
 - `TestSchemaVersionIsFour` — the two assertions in `store_test.go` move from 3 to 4, and `azure_actions` joins the expected table list. (Lot 2 and lot 3 each hit this; it is not a surprise, it is a checklist item.)
+- `TestArmIDSurvivesTheUpsert` — `ReplaceAzureInventory` stores ARM's mixed-case id in `arm_id` while `id` stays lowercased, and `azure.Resource` carries both. The join key does not change.
+- `TestADeletedResourceIsNotActionable` — a row with `deleted_at` set is still returned by `ListAzureResources` (it is, today — the display needs it), so **the actionable lookup must filter it out**. Acting on a resource Azure no longer has is a 404, not an attempt.
+
+**`ErrActionInFlight` is read from the driver, not from English.** The unique index raises a constraint violation; turning it into the sentinel by `strings.Contains(err.Error(), "UNIQUE constraint failed")` would be the mistake task 1 exists to close, one page earlier. Verified in the module cache rather than assumed: `modernc.org/sqlite` (the driver in `go.mod`) exports `*sqlite.Error` with `Code() int` (`error.go:12-21`), and `modernc.org/sqlite/lib` defines `SQLITE_CONSTRAINT_UNIQUE = 2067` (`lib/sqlite.go:3234`). So: `errors.As(err, &serr) && serr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE`.
 
 - [ ] **Step 3: Implement, then verify** — `go test ./internal/hub/store/...`.
 
@@ -225,7 +239,7 @@ var ErrNotActionable = errors.New("hub: this resource type has no actions")
 
 `StartAction`: look the resource up in the store (that is the scope check, the inventory *is* the allow-list); reject if the type is not in `azure.Actionable`; `StartAzureAction` with `state_before` taken from the row; spawn the worker; return the id.
 
-The worker: `MarkAzureActionRunning`, `azure.Do`, then on success `azure.ReadState` and — only if the read succeeded — write the state onto `azure_resources`; `FinishAzureAction`; `h.bus.Publish("azure_action", …)` on every path, including failure. The goroutine takes a context tied to the hub's lifetime, not to the HTTP request, which dies the moment the 202 is written.
+The worker: `MarkAzureActionRunning`, `azure.Do`, then on success `azure.ReadState` and — only if the read succeeded — write the state onto `azure_resources`; `FinishAzureAction`; `h.bus.Publish("azure_action", …)` on every path, including failure. The goroutine takes a context tied to the hub's lifetime, not to the HTTP request, which dies the moment the 202 is written. **No such context exists on `Hub` today** — `Run(ctx)` (`hub.go:111`) is its only holder — so `Run` stores it before entering the loop, and `StartAction` falls back to `context.Background()` when an action is started before `Run`, which only tests do.
 
 Startup: `InterruptAzureActions` runs where the lot 2 delivery replay runs, and logs the count.
 
@@ -296,7 +310,9 @@ In `azure.ts`: `actionsFor(resourceType)` (empty for a type that is not actionab
 
 - [ ] A 500 on an action is not retried (task 2), and an interrupted action is not replayed (task 4). Both are tests, not comments.
 - [ ] No code path writes a state it did not read from Azure.
-- [ ] The in-flight guard is a database constraint, not a check-then-insert.
+- [ ] The in-flight guard is a database constraint, not a check-then-insert, and its violation is recognised by the driver's code, not by matching English.
+- [ ] The action URL is built from ARM's own casing (`arm_id`), not from the lowercased join key.
+- [ ] A soft-deleted resource is a 404, not an attempt.
 - [ ] Both success and failure reach the bus.
 - [ ] `go vet ./...` clean, `svelte-check` zero, CI green.
 - [ ] The README does not claim Azure actions are verified.
