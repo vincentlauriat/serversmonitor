@@ -134,6 +134,8 @@ lexical order is chronological order.
 | `azure_costs` | One row per (resource, month). **No foreign key, deliberately.** |
 | `azure_sync` | One row per scope: whether the last inventory and the last cost query worked, and why not. |
 | `azure_actions` | One row per start, stop or restart, written before the call. A partial unique index allows one in flight per resource. |
+| `azure_provisions` | One row per attempt at creating a VM, written before the first call. A partial unique index allows one in flight per name. |
+| `azure_provision_resources` | One row per resource a provision created, written as it lands. `deleted_at` is set when a person deletes it, never by the hub. |
 
 Every series table cascades from `hosts`, and `deliveries` cascades from `alert_events`. Deleting a
 host removes everything about it in one statement.
@@ -250,7 +252,7 @@ intact, trace id included.
 
 Lot 4 adds three: start, stop and restart, on `Microsoft.Web/sites`. The sandbox holds no virtual
 machine, so VM actions would have shipped untestable; the type-to-verb mapping is a table, and lot 5
-adds VMs as a row rather than as a rewrite.
+adds VMs as a row — but not only as a row: see below.
 
 **Reader is no longer enough.** Every action is `Microsoft.Web/sites/start/action` or a sibling, so
 acting needs **Website Contributor** on top of Reader. Both are asked for at once: a second round
@@ -281,6 +283,81 @@ only be settled on the first real action, which is the worst possible moment.
 The id travels in the request body rather than the path: an ARM id is mostly slashes, a Go 1.22
 `ServeMux` wildcard does not match one, and percent-encoding it would tie the route to when
 `net/http` unescapes a path.
+
+**Lot 4 under-promised, and lot 5 paid for it.** Adding VMs was meant to be a row in the type-to-verb
+table. The row is real — `start`, `deallocate`, `restart` — but two package-level constants were
+Microsoft.Web shaped and silently wrong for Compute:
+
+- `api-version`. `2023-12-01` is a Web version and `Microsoft.Compute` does not publish it at all.
+- The state reader. A site has `properties.state`; a VM's power state is in `/instanceView` under
+  `statuses[].code`, as `PowerState/running`. The Web reader against a VM returned `(nil, nil)` —
+  "nobody knows" — which is a **silent empty**, indistinguishable from a genuinely unread state.
+
+Both now belong to the resource type, in one `providers` table that carries the api-version, the
+verbs, the state URL and the state reader together. Adding a third provider is a row; sharing a
+constant between two was the bug.
+
+### Asynchronous operations
+
+Compute answers `202 Accepted` and finishes minutes later. The call path therefore returns the whole
+answer — status and headers — not only the body, and `Await` follows it to a terminal state.
+
+`Azure-AsyncOperation` and `Location` are not two spellings of one thing. The first carries a
+`status` field and is authoritative; the second has no status at all and merely stops answering 202
+once the *result* exists, which for a create is earlier than the machine being ready. The first wins
+when both are sent. A 202 with neither is an error naming both, never a silent success.
+
+A failed operation is an `*OperationError`, deliberately not the `*Error` that HTTP failures use: the
+poll that carried the news answered 200, so `StatusOf` must not turn a failed VM creation into an
+HTTP success. A cancelled context is neither: the hub stopping is not Azure refusing.
+
+**`running` finally means something.** Every lot 4 action went `pending` → `running` → finished
+inside one HTTP call, so no page could ever observe the middle state. A VM stop stays `running` for
+the length of the poll.
+
+### Provisioning a VM
+
+**The hub never creates a network.** Read back from the live role definition on 2026-09-21,
+`Virtual Machine Contributor` grants `networkInterfaces/*`, `virtualNetworks/read` and
+`subnets/join/action` — and no write anywhere else in `Microsoft.Network`. No VNet, no public IP, no
+NSG. The subnet is configured; the hub reads it and joins it, or refuses.
+
+**The VM gets no public IP, and does not need one.** The agent dials out over an outbound WebSocket,
+so a machine with no inbound address is exactly as monitorable — and one thing fewer is exposed.
+Nobody can SSH to it from outside. The corollary is stated where the setting is: the hub must have
+an address the VM can reach, so `localhost` is refused rather than discovered twenty minutes later
+as a machine that booted and never called home.
+
+Creating is two `PUT`s — the NIC, then the VM — preceded by one `GET` on the subnet's VNet, because a
+subnet has no location of its own and defaulting a region would create the NIC where the subnet is
+not. The OS disk is created with `deleteOption: Delete`, so it cannot outlive the VM: there is no
+deletion ordering to get wrong and the most expensive possible leftover cannot happen.
+
+Every resource carries `createdBy=ServersMonitor`; the VM also carries `smHostId`.
+
+**The hub records orphans. It does not roll them back.** A run that dies between the NIC and the VM
+leaves a resource behind. Deleting is the one thing lots 1 to 4 never do, and putting the first
+automatic delete in the failure path — the least exercised path in the lot, and exactly where the
+hub's view of what it created is least trustworthy — is how a hub deletes something it should not
+have. The leftovers stay in the record, named, and the page shows them with the button that removes
+them. A test asserts that **no DELETE is ever sent** on the failure path.
+
+**The host row is created before Azure is touched**, so a VM that boots and dials in finds itself
+expected. A run refused for any reason creates nothing at all — not a host row, not a provision row.
+
+**A VM the hub creates must be a VM the hub can show.** A subnet in a resource group nobody syncs is
+refused: the machine would never appear in the inventory or in the costs.
+
+**The token goes into cloud-init and nowhere else.** It rides in `customData` as a file with mode
+`0600`, not on a command line — a command line is visible in `ps` and in cloud-init's world-readable
+output log. It is per host and revocable in one click. The store keeps a hash, never the token, so
+the test that proves it never leaks has to read it back out of the request body.
+
+**Deleting is user-initiated, name-confirmed and tag-restricted.** The VM goes first, then the NIC,
+because Azure refuses to delete a NIC still attached. Every tag is checked in Azure before anything
+at all is deleted — a read that fails is a refusal, because not knowing whether a resource is ours is
+not permission to delete it. A resource already gone is recorded as deleted rather than reported as
+a failure.
 
 ## The hub process
 
