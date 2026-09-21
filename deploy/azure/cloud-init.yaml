@@ -1,0 +1,35 @@
+#cloud-config
+# Prepares the VM: Docker, plus a separate data disk mounted as ext4.
+# The hub image is loaded afterwards over scp + docker load: there is no
+# registry, and building the Node front on 1 GB of RAM would be fragile.
+#
+# Keep this file ASCII. The Azure CLI base64-encodes --custom-data through a
+# latin-1 codec and fails on an em dash, with an error that names neither the
+# file nor the character.
+package_update: true
+packages:
+  - docker.io
+
+# overwrite:false is the load-bearing part. If the VM is ever recreated on the
+# same disk, the data is found as it was instead of being wiped.
+disk_setup:
+  /dev/disk/azure/scsi1/lun0:
+    table_type: gpt
+    layout: true
+    overwrite: false
+
+fs_setup:
+  - device: /dev/disk/azure/scsi1/lun0
+    partition: 1
+    filesystem: ext4
+    label: smdata
+    overwrite: false
+
+# Mounted by LABEL, not by device name. On the first reboot Azure renamed the
+# data disk from sdb1 to sda1; a device-name entry would have failed to mount,
+# and the hub would have started on an empty directory.
+mounts:
+  - [ "LABEL=smdata", "/var/lib/serversmonitor", "ext4", "defaults,nofail", "0", "2" ]
+
+runcmd:
+  - [ systemctl, enable, --now, docker ]
