@@ -19,6 +19,9 @@ type AzureProvision struct {
 	RequestedAt time.Time
 	FinishedAt  *time.Time
 	Error       string
+	// DeleteError is why the last deletion attempt stopped, if one did. It is
+	// separate from Error: a provision that succeeded still succeeded.
+	DeleteError string
 	Resources   []AzureProvisionResource
 }
 
@@ -132,7 +135,7 @@ func (s *Store) ListAzureProvisions(limit int) ([]AzureProvision, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := s.db.Query(`SELECT id, name, host_id, status, requested_at, finished_at, error
+	rows, err := s.db.Query(`SELECT id, name, host_id, status, requested_at, finished_at, error, delete_error
 		FROM azure_provisions ORDER BY requested_at DESC, id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -145,7 +148,7 @@ func (s *Store) ListAzureProvisions(limit int) ([]AzureProvision, error) {
 		var hostID sql.NullInt64
 		var requested string
 		var finished sql.NullString
-		if err := rows.Scan(&p.ID, &p.Name, &hostID, &p.Status, &requested, &finished, &p.Error); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &hostID, &p.Status, &requested, &finished, &p.Error, &p.DeleteError); err != nil {
 			return nil, err
 		}
 		if hostID.Valid {
@@ -220,5 +223,28 @@ func nullInt(p *int64) any {
 // provision that never started.
 func (s *Store) SetAzureProvisionHost(provisionID, hostID int64) error {
 	_, err := s.db.Exec(`UPDATE azure_provisions SET host_id = ? WHERE id = ?`, hostID, provisionID)
+	return err
+}
+
+// AzureProvision returns one run. The delete path goes through it, so a
+// provision id nobody wrote cannot reach Azure.
+func (s *Store) AzureProvision(id int64) (AzureProvision, error) {
+	ps, err := s.ListAzureProvisions(1000)
+	if err != nil {
+		return AzureProvision{}, err
+	}
+	for _, p := range ps {
+		if p.ID == id {
+			return p, nil
+		}
+	}
+	return AzureProvision{}, ErrNoSuchProvision
+}
+
+// SetAzureProvisionDeleteError records why a deletion stopped, or clears it
+// when one is started. It never touches status: how the provision itself
+// ended is history, and a later delete does not rewrite it.
+func (s *Store) SetAzureProvisionDeleteError(id int64, msg string) error {
+	_, err := s.db.Exec(`UPDATE azure_provisions SET delete_error = ? WHERE id = ?`, msg, id)
 	return err
 }

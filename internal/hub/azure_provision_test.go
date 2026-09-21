@@ -415,3 +415,146 @@ func assertNothingHappened(t *testing.T, h *Hub, f *provisionFake) {
 		}
 	}
 }
+
+// --- task 10: deleting ----------------------------------------------------
+
+// deletingFake serves reads with the hub's own tag and records every DELETE.
+type deletingFake struct {
+	*provisionFake
+	untagged bool
+}
+
+func newDeletingFake(t *testing.T, untagged bool) *deletingFake {
+	f := &deletingFake{provisionFake: &provisionFake{}, untagged: untagged}
+	tag := "ServersMonitor"
+	if untagged {
+		tag = "somebody-else"
+	}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/oauth2/") {
+			io.WriteString(w, `{"token_type":"Bearer","expires_in":3599,"access_token":"tok"}`)
+			return
+		}
+		f.mu.Lock()
+		f.reqs = append(f.reqs, r.Method+" "+r.URL.Path)
+		f.mu.Unlock()
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/virtualNetworks/vnet-sandbox"):
+			io.WriteString(w, `{"location":"westeurope"}`)
+		case r.Method == http.MethodGet:
+			fmt.Fprintf(w, `{"tags":{"createdBy":%q}}`, tag)
+		default:
+			fmt.Fprintf(w, `{"id":%q}`, r.URL.Path)
+		}
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *deletingFake) deletes() []string {
+	var out []string
+	for _, r := range f.requests() {
+		if strings.HasPrefix(r, "DELETE ") {
+			out = append(out, strings.TrimPrefix(r, "DELETE "))
+		}
+	}
+	return out
+}
+
+func provisionThen(t *testing.T, f *deletingFake) (*Hub, int64, context.CancelFunc) {
+	t.Helper()
+	h, cancel := provisionHub(t, f.provisionFake, t.TempDir(), true)
+	id, err := h.StartProvision("vm-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := waitProvision(t, h, id); p.Status != "succeeded" {
+		t.Fatalf("setup: status = %s, error = %s", p.Status, p.Error)
+	}
+	return h, id, cancel
+}
+
+func TestDeletingAProvisionNeedsTheNameTypedRight(t *testing.T) {
+	f := newDeletingFake(t, false)
+	h, id, cancel := provisionThen(t, f)
+	defer cancel()
+
+	before := len(f.deletes())
+	if err := h.DeleteProvision(id, "vm-tset"); !errors.Is(err, ErrWrongName) {
+		t.Fatalf("err = %v, want ErrWrongName", err)
+	}
+	if got := len(f.deletes()); got != before {
+		t.Fatalf("a mistyped confirmation reached Azure: %v", f.deletes())
+	}
+	// And the resources are still recorded as present.
+	p, _ := h.st.AzureProvision(id)
+	for _, r := range p.Resources {
+		if r.DeletedAt != nil {
+			t.Fatalf("%s was marked deleted", r.ARMID)
+		}
+	}
+}
+
+func TestDeletingAProvisionRemovesTheVMThenTheNIC(t *testing.T) {
+	f := newDeletingFake(t, false)
+	h, id, cancel := provisionThen(t, f)
+	defer cancel()
+
+	if err := h.DeleteProvision(id, "vm-test"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		p, _ := h.st.AzureProvision(id)
+		for _, r := range p.Resources {
+			if r.DeletedAt == nil {
+				return false
+			}
+		}
+		return len(p.Resources) == 2
+	}, "both resources to be recorded as deleted")
+
+	got := f.deletes()
+	if len(got) != 2 || !strings.Contains(got[0], "/virtualMachines/") || !strings.Contains(got[1], "/networkInterfaces/") {
+		t.Fatalf("deletes = %v, want the VM then the NIC", got)
+	}
+	// The host row survives: its history is the record of a machine that
+	// existed, and removing it is a separate, explicit act.
+	if hosts, _ := h.st.ListHosts(); len(hosts) != 1 {
+		t.Fatalf("hosts = %d, want the row to survive the deletion", len(hosts))
+	}
+}
+
+func TestDeletingSomethingTheHubDidNotCreateIsRefusedAndRecorded(t *testing.T) {
+	f := newDeletingFake(t, true) // Azure reports somebody else's tag
+	h, id, cancel := provisionThen(t, f)
+	defer cancel()
+
+	if err := h.DeleteProvision(id, "vm-test"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		p, _ := h.st.AzureProvision(id)
+		return p.DeleteError != ""
+	}, "the refusal to be recorded")
+
+	if got := f.deletes(); len(got) != 0 {
+		t.Fatalf("something was deleted anyway: %v", got)
+	}
+	p, _ := h.st.AzureProvision(id)
+	if !strings.Contains(p.DeleteError, "createdBy") {
+		t.Fatalf("delete_error = %q, want it to name the tag", p.DeleteError)
+	}
+	// And the provision itself still reads as the success it was.
+	if p.Status != "succeeded" {
+		t.Fatalf("a failed deletion rewrote how the provision ended: %s", p.Status)
+	}
+}
+
+func TestDeletingAnUnknownProvisionIsRefused(t *testing.T) {
+	f := newDeletingFake(t, false)
+	h, _, cancel := provisionThen(t, f)
+	defer cancel()
+	if err := h.DeleteProvision(9999, "vm-test"); !errors.Is(err, store.ErrNoSuchProvision) {
+		t.Fatalf("err = %v, want ErrNoSuchProvision", err)
+	}
+}

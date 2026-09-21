@@ -10,7 +10,11 @@ CREATE TABLE azure_provisions (
   status        TEXT NOT NULL,   -- pending | running | succeeded | failed | interrupted
   requested_at  TEXT NOT NULL,
   finished_at   TEXT,
-  error         TEXT NOT NULL DEFAULT ''
+  error         TEXT NOT NULL DEFAULT '',
+  -- A delete that failed does not rewrite how the provision itself ended: a
+  -- run that succeeded in March still succeeded. The reason lives beside it
+  -- so the page can show it next to the button that produced it.
+  delete_error  TEXT NOT NULL DEFAULT ''
 );
 
 -- host_id has no foreign key, deliberately, like azure_costs and

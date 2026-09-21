@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -154,4 +155,63 @@ func (h *Hub) interruptProvisions() {
 // ListProvisions is what the page reads.
 func (h *Hub) ListProvisions(limit int) ([]store.AzureProvision, error) {
 	return h.st.ListAzureProvisions(limit)
+}
+
+// ErrWrongName refuses a deletion whose confirmation does not match.
+var ErrWrongName = errors.New("azure: the name typed does not match the VM being deleted")
+
+// DeleteProvision removes everything one provision created — the VM, then its
+// NIC, the OS disk going with the VM.
+//
+// It is user-initiated, and confirmed by typing the name rather than by a
+// dialog dismissed by reflex: this is the only place in the whole application
+// where the hub destroys anything, and the difference between a resource
+// created by hand and one created here is a tag nobody can see from the page.
+// The tag is checked again in Azure before every DELETE; this check is the
+// one that protects against the wrong row being clicked.
+func (h *Hub) DeleteProvision(provisionID int64, confirmName string) error {
+	_, client, ok := h.azureReady()
+	if !ok {
+		return ErrAzureOff
+	}
+	p, err := h.st.AzureProvision(provisionID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(confirmName) != p.Name {
+		return fmt.Errorf("%w: type %q to confirm", ErrWrongName, p.Name)
+	}
+	var rs []azure.Deletable
+	for _, r := range p.Resources {
+		if r.DeletedAt == nil {
+			rs = append(rs, azure.Deletable{ARMID: r.ARMID, Kind: r.Kind})
+		}
+	}
+	if len(rs) == 0 {
+		return nil // everything is already gone; the second press is not a failure
+	}
+	if err := h.st.SetAzureProvisionDeleteError(provisionID, ""); err != nil {
+		h.log.Error("azure provision: clear delete error", "err", err)
+	}
+	go h.runDeleteProvision(provisionID, rs, client)
+	return nil
+}
+
+func (h *Hub) runDeleteProvision(provisionID int64, rs []azure.Deletable, client *azure.Client) {
+	ctx, cancel := context.WithTimeout(h.baseCtx(), provisionTimeout)
+	defer cancel()
+
+	onDeleted := func(d azure.Deletable) error {
+		return h.st.MarkAzureProvisionResourceDeleted(d.ARMID, time.Now().UTC())
+	}
+	if err := azure.DeleteCreated(ctx, client, rs, onDeleted); err != nil {
+		h.log.Warn("azure provision delete failed", "provision", provisionID, "err", err)
+		if e := h.st.SetAzureProvisionDeleteError(provisionID, err.Error()); e != nil {
+			h.log.Error("azure provision: record delete error", "err", e)
+		}
+	}
+	// Published whether it worked or not: a failure nobody published is the
+	// defect lot 3 shipped and lot 4 fixed.
+	h.bus.Publish("azure_provision", map[string]any{"id": provisionID, "deleted": true})
+	h.kickAzure()
 }
