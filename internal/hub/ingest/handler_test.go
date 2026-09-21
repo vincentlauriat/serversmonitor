@@ -255,6 +255,12 @@ func TestReconfigureReachesAgent(t *testing.T) {
 	_, tok, _ := r.st.CreateHost("pi", time.Now())
 	c := handshake(t, r, tok)
 	defer c.Close(websocket.StatusNormalClosure, "")
+	// The server writes the welcome and only then registers the connection, so
+	// a handshake that has returned does not mean Reconfigure can see this
+	// socket yet. Broadcasting into that gap sends to nobody and the read below
+	// waits out its whole timeout. Rare on a fast machine, reproducible on a
+	// loaded CI runner.
+	waitFor(t, func() bool { return len(r.h.Connected()) == 1 })
 	r.h.Reconfigure(30)
 	if m, ok := recv(t, c).(*proto.Reconfigure); !ok || m.IntervalSec != 30 {
 		t.Fatalf("got %+v", m)
