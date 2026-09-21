@@ -123,6 +123,48 @@ func (c *Client) PostAction(ctx context.Context, path string, query url.Values) 
 	return c.doWith(ctx, http.MethodPost, c.url(path, query), nil, retryThrottlingOnly)
 }
 
+// Response is what an ARM call answered, for the callers that need more than
+// the body. A 202 is indistinguishable from a 200 once the status is dropped,
+// and Azure-AsyncOperation is the only way to learn how the operation ended.
+type Response struct {
+	Status int
+	Header http.Header
+	Body   []byte
+}
+
+// PostActionAsync sends an action and returns the whole answer, so the caller
+// can follow a 202. Same narrow retry policy as PostAction.
+func (c *Client) PostActionAsync(ctx context.Context, path string, query url.Values) (Response, error) {
+	return c.doResponse(ctx, http.MethodPost, c.url(path, query), nil, retryThrottlingOnly)
+}
+
+// PutAsync creates or updates a named resource.
+func (c *Client) PutAsync(ctx context.Context, path string, query url.Values, body any) (Response, error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return Response{}, err
+	}
+	return c.doResponse(ctx, http.MethodPut, c.url(path, query), raw, retryIdempotent)
+}
+
+// DeleteAsync removes a named resource.
+func (c *Client) DeleteAsync(ctx context.Context, path string, query url.Values) (Response, error) {
+	return c.doResponse(ctx, http.MethodDelete, c.url(path, query), nil, retryIdempotent)
+}
+
+// GetResponse reads a URL as given — no base, no query building. The async
+// poll needs it: Azure hands back an absolute operation URL with its own query.
+func (c *Client) GetResponse(ctx context.Context, rawURL string) (Response, error) {
+	return c.doResponse(ctx, http.MethodGet, rawURL, nil, Retryable)
+}
+
+// retryIdempotent retries everything the read path does, 5xx included. A PUT or
+// a DELETE on a named resource id converges: repeating it produces the same
+// resource, or the same absence, not a second one. This is exactly why
+// retryThrottlingOnly is narrower — a POST …/deallocate repeated after a 5xx
+// may act twice, and the first one may already have landed.
+func retryIdempotent(err error) bool { return Retryable(err) }
+
 func (c *Client) url(path string, query url.Values) string {
 	u := strings.TrimSuffix(c.opt.Base, "/") + path
 	if len(query) > 0 {
@@ -131,15 +173,23 @@ func (c *Client) url(path string, query url.Values) string {
 	return u
 }
 
+// do keeps the body-only signature every lot 3 and lot 4 call site uses. The
+// status and headers stop here; the callers that need them use doResponse.
 func (c *Client) do(ctx context.Context, method, rawURL string, body []byte) ([]byte, error) {
-	return c.doWith(ctx, method, rawURL, body, Retryable)
+	r, err := c.doResponse(ctx, method, rawURL, body, Retryable)
+	return r.Body, err
 }
 
-// doWith takes the retry policy per call rather than per client. One
+func (c *Client) doWith(ctx context.Context, method, rawURL string, body []byte, retry func(error) bool) ([]byte, error) {
+	r, err := c.doResponse(ctx, method, rawURL, body, retry)
+	return r.Body, err
+}
+
+// doResponse takes the retry policy per call rather than per client. One
 // *Client is shared by the inventory sweep, the cost sweep and the actions
 // (see hub.go), so weakening its Options for one call would be a race against
 // a sweep already in flight.
-func (c *Client) doWith(ctx context.Context, method, rawURL string, body []byte, retry func(error) bool) ([]byte, error) {
+func (c *Client) doResponse(ctx context.Context, method, rawURL string, body []byte, retry func(error) bool) (Response, error) {
 	var last error
 	for attempt := 1; attempt <= c.opt.Attempts; attempt++ {
 		out, wait, err := c.attempt(ctx, method, rawURL, body)
@@ -154,18 +204,18 @@ func (c *Client) doWith(ctx context.Context, method, rawURL string, body []byte,
 			wait = backoff(attempt)
 		}
 		if !c.opt.Sleep(ctx, wait) {
-			return nil, err // shutting down
+			return Response{}, err // shutting down
 		}
 	}
-	return nil, last
+	return Response{}, last
 }
 
-// attempt returns the body, or an error plus the wait the server asked for.
-func (c *Client) attempt(ctx context.Context, method, rawURL string, body []byte) ([]byte, time.Duration, error) {
+// attempt returns the answer, or an error plus the wait the server asked for.
+func (c *Client) attempt(ctx context.Context, method, rawURL string, body []byte) (Response, time.Duration, error) {
 	tok, err := c.src.Token(ctx)
 	if err != nil {
 		// No credential means no inventory. It must never mean an empty one.
-		return nil, 0, err
+		return Response{}, 0, err
 	}
 	var rdr io.Reader
 	if body != nil {
@@ -173,7 +223,7 @@ func (c *Client) attempt(ctx context.Context, method, rawURL string, body []byte
 	}
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, rdr)
 	if err != nil {
-		return nil, 0, err
+		return Response{}, 0, err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok.Value)
 	req.Header.Set("User-Agent", "ServersMonitor")
@@ -183,20 +233,20 @@ func (c *Client) attempt(ctx context.Context, method, rawURL string, body []byte
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, 0, err
+			return Response{}, 0, err
 		}
-		return nil, 0, MarkRetryable(fmt.Errorf("azure request failed: %w", err))
+		return Response{}, 0, MarkRetryable(fmt.Errorf("azure request failed: %w", err))
 	}
 	defer resp.Body.Close()
 	out, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return out, 0, nil
+		return Response{Status: resp.StatusCode, Header: resp.Header, Body: out}, 0, nil
 	}
 	e := armError(resp.StatusCode, out)
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return nil, retryAfter(resp.Header.Get("Retry-After")), MarkRetryable(e)
+		return Response{}, retryAfter(resp.Header.Get("Retry-After")), MarkRetryable(e)
 	}
-	return nil, 0, e
+	return Response{}, 0, e
 }
 
 // retryAfter reads the header Azure sends with a 429. Only the seconds form is
