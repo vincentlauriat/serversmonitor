@@ -2,8 +2,8 @@
 
 [![ci](https://github.com/vincentlauriat/serversmonitor/actions/workflows/ci.yml/badge.svg)](https://github.com/vincentlauriat/serversmonitor/actions/workflows/ci.yml)
 
-**A self-hosted monitoring hub in the spirit of [Beszel](https://beszel.dev/) — one small agent per
-machine, one hub that stores, draws and alerts.**
+**A self-hosted monitoring hub — one small agent per machine, one hub that stores, draws and
+alerts.**
 
 Two Go binaries, no runtime dependency. `smhub` carries the web interface inside itself; `smagent`
 runs anywhere you can put a static binary: an Azure VM, a Raspberry Pi, a Mac, a box at a hosting
