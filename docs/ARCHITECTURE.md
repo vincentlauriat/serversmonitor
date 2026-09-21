@@ -344,6 +344,20 @@ est écrit là où se trouve le réglage : le hub doit avoir une adresse que la 
 `localhost` est refusé plutôt que découvert vingt minutes plus tard sous la forme d'une machine qui
 a démarré et n'a jamais rappelé.
 
+**Mais l'absence d'adresse entrante n'est pas l'accès sortant, et Azure a changé ça sous nos
+pieds.** La création du subnet de la sandbox, le 2026-09-21, a renvoyé
+`defaultOutboundAccess: false` : Microsoft a retiré le SNAT sortant implicite pour les nouveaux
+déploiements le 2025-09-30. Une VM sans IP publique dans un subnet créé aujourd'hui n'atteint pas
+du tout internet, donc l'agent ne pourrait jamais appeler le hub — la seule chose que ce lot existe
+pour rendre possible. Mesuré en relisant le subnet, pas supposé.
+
+Poser `defaultOutboundAccess: true` explicitement est encore accepté, et c'est ce que porte
+désormais le subnet de la sandbox. C'est un mécanisme déprécié en sursis ; la réponse durable est
+une NAT Gateway sur le subnet, à environ 32 €/mois plus le trafic — de l'argent réel dans une
+sandbox dont le sujet est le coût. Le hub ne peut créer ni l'une ni l'autre : ce sont des écritures
+`Microsoft.Network` hors de `Virtual Machine Contributor`. C'est une propriété du réseau que
+désigne le réglage, et le hub ne la vérifie pas plus qu'il ne peut la corriger.
+
 Créer, c'est deux `PUT` — la NIC, puis la VM — précédés d'un `GET` sur le VNet du subnet, car un
 subnet n'a pas de localisation propre et choisir une région par défaut créerait la NIC là où le
 subnet n'est pas. Le disque OS est créé avec `deleteOption: Delete` : il ne peut donc pas survivre à

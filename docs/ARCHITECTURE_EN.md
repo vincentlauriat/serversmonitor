@@ -328,6 +328,19 @@ Nobody can SSH to it from outside. The corollary is stated where the setting is:
 an address the VM can reach, so `localhost` is refused rather than discovered twenty minutes later
 as a machine that booted and never called home.
 
+**But no inbound address is not the same as outbound access, and Azure changed that under us.**
+Creating the sandbox's subnet on 2026-09-21 returned `defaultOutboundAccess: false`: Microsoft
+retired implicit outbound SNAT for new deployments on 2025-09-30. A VM with no public IP in a
+subnet created today cannot reach the internet at all, so the agent could never dial the hub — the
+one thing this lot exists to make happen. Measured by reading the subnet back, not assumed.
+
+Setting `defaultOutboundAccess: true` explicitly is still accepted, and that is what the sandbox
+subnet now carries. It is a deprecated mechanism on borrowed time; the durable answer is a NAT
+Gateway on the subnet, which costs about €32 a month plus traffic — real money in a sandbox whose
+subject is cost. The hub cannot create either: both are `Microsoft.Network` writes outside
+`Virtual Machine Contributor`. This is a property of the network the subnet setting points at, and
+the hub neither checks it nor can fix it.
+
 Creating is two `PUT`s — the NIC, then the VM — preceded by one `GET` on the subnet's VNet, because a
 subnet has no location of its own and defaulting a region would create the NIC where the subnet is
 not. The OS disk is created with `deleteOption: Delete`, so it cannot outlive the VM: there is no

@@ -104,6 +104,7 @@ Linux VM with the agent already installed.
 | The **Website Contributor** role | Only to *act* on App Services. Reader can see one; it cannot start or stop it. |
 | The **Virtual Machine Contributor** role | Only to create, act on and delete VMs. Ask for all three roles at once — a second round trip through a tenant administrator is a second wait. |
 | A VNet with a subnet | **You create it, not the hub.** Virtual Machine Contributor cannot create a VNet, a public IP or an NSG; it can only join an existing subnet. Being Contributor on the resource group is enough to make one yourself, with no administrator involved. |
+| Outbound internet on that subnet | Azure retired implicit outbound access for new deployments on 2025‑09‑30, so a subnet created since then returns `defaultOutboundAccess: false` and a VM with no public IP cannot reach anything — including this hub. Set it back to `true` (still accepted, deprecated) or put a NAT Gateway on the subnet (~€32/month). |
 | At least one resource group | Reading a whole subscription would need a subscription-scope role assignment this hub does not ask for. |
 
 **Reader covers cost as well as inventory.** The Cost Management query is an HTTP POST, which looks
@@ -159,6 +160,10 @@ it stays unproven.
 
 - **No published agent binary yet.** cloud-init installs the agent from the GitHub release, and
   there is no release to download. Until one is published, a created VM comes up without an agent.
+- **The hub does not check the subnet can reach the internet.** It cannot: reading it is one
+  permission and fixing it is another, and both are outside the role it is given. If
+  `defaultOutboundAccess` is false and there is no NAT Gateway, the VM boots and the agent never
+  connects, with nothing on the hub's side to say why.
 - **No cost guardrails.** Schedules, orphan detection and budget alerts arrive in lot 6.
 - **No per-rule routing.** Every enabled channel receives every transition. Mute a host to silence it.
 - **One user.** A single local admin account; Entra ID is deferred.
