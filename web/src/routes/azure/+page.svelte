@@ -374,7 +374,10 @@
                 {/each}
               </ul>
             {:else if p.resources.length > 0}
-              <p class="mt-2 text-xs text-zinc-500">Everything this run created has been deleted.</p>
+              <p class="mt-2 text-xs text-zinc-500">
+                Everything this run recorded has been deleted. The OS disk goes with the VM, which
+                Azure is asked to do and the hub does not verify.
+              </p>
             {/if}
 
             {#if p.delete_error}

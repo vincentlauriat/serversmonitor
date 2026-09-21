@@ -31,7 +31,7 @@ type AzureProvision struct {
 type AzureProvisionResource struct {
 	ID        int64
 	ARMID     string
-	Kind      string // nic | vm | disk
+	Kind      string // nic | vm — the OS disk is not one: see CreateVM
 	CreatedAt time.Time
 	DeletedAt *time.Time
 }

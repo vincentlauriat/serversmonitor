@@ -26,7 +26,8 @@ CREATE TABLE azure_provision_resources (
   id           INTEGER PRIMARY KEY,
   provision_id INTEGER NOT NULL REFERENCES azure_provisions(id) ON DELETE CASCADE,
   arm_id       TEXT NOT NULL,   -- ARM's own casing: the delete URL is built from it
-  kind         TEXT NOT NULL,   -- nic | vm | disk
+  kind         TEXT NOT NULL,   -- nic | vm; the OS disk is created with
+                                -- deleteOption Delete and goes with the VM
   created_at   TEXT NOT NULL,
   deleted_at   TEXT             -- set when a person deletes it; never by the hub on its own
 );

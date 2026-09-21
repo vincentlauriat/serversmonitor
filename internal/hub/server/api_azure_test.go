@@ -620,7 +620,9 @@ func TestProvisionErrorsMapToStatuses(t *testing.T) {
 	}{
 		{"already running", store.ErrProvisionInFlight, http.StatusConflict},
 		{"azure off", azure.ErrNotConfigured, http.StatusBadRequest},
-		{"not configured", errors.New("provisioning is not configured: a subnet id"), http.StatusBadRequest},
+		{"not configured", azure.Refuse("provisioning is not configured: a subnet id"), http.StatusBadRequest},
+		// A failure that is not a refusal is the hub's problem, not the caller's.
+		{"database locked", errors.New("database is locked"), http.StatusInternalServerError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newAzureRig(t)
@@ -637,7 +639,7 @@ func TestARefusalNamesWhatIsMissing(t *testing.T) {
 	// The message is the whole point of the 400: "bad request" tells nobody
 	// which setting to go and fill in.
 	r := newAzureRig(t)
-	r.azure.(*fakeAzurer).provisionErr = errors.New(
+	r.azure.(*fakeAzurer).provisionErr = azure.Refuse(
 		"provisioning is not configured: a subnet id; the hub address the agent should dial")
 	_, body := r.do(t, "POST", "/api/v1/azure/vms", map[string]any{"name": "vm-test"})
 	for _, want := range []string{"subnet", "hub address"} {
@@ -669,7 +671,8 @@ func TestDeleteErrorsMapToStatuses(t *testing.T) {
 		want int
 	}{
 		{"unknown provision", store.ErrNoSuchProvision, http.StatusNotFound},
-		{"wrong name", errors.New("the name typed does not match"), http.StatusBadRequest},
+		{"wrong name", azure.Refuse("the name typed does not match"), http.StatusBadRequest},
+		{"database locked", errors.New("database is locked"), http.StatusInternalServerError},
 		{"azure off", azure.ErrNotConfigured, http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

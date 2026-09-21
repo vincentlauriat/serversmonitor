@@ -81,7 +81,7 @@ func (h *Hub) StartProvision(name string) (int64, error) {
 // inventory, never appears in the costs, and is remembered only here.
 func withinScope(cfg azure.Config, parts azure.SubnetParts) error {
 	if !strings.EqualFold(parts.Subscription, cfg.SubscriptionID) {
-		return fmt.Errorf("the subnet is in subscription %s and this hub watches %s",
+		return azure.Refuse("the subnet is in subscription %s and this hub watches %s",
 			parts.Subscription, cfg.SubscriptionID)
 	}
 	for _, g := range cfg.ResourceGroups {
@@ -89,7 +89,7 @@ func withinScope(cfg azure.Config, parts azure.SubnetParts) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("the subnet is in resource group %s, which this hub does not watch; "+
+	return azure.Refuse("the subnet is in resource group %s, which this hub does not watch; "+
 		"a VM created there would never appear in the inventory or the costs",
 		parts.ResourceGroup)
 }
@@ -179,7 +179,7 @@ func (h *Hub) DeleteProvision(provisionID int64, confirmName string) error {
 		return err
 	}
 	if strings.TrimSpace(confirmName) != p.Name {
-		return fmt.Errorf("%w: type %q to confirm", ErrWrongName, p.Name)
+		return &azure.Refusal{Err: fmt.Errorf("%w: type %q to confirm", ErrWrongName, p.Name)}
 	}
 	var rs []azure.Deletable
 	for _, r := range p.Resources {

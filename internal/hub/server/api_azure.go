@@ -440,12 +440,16 @@ func (s *server) handleStartProvision(w http.ResponseWriter, r *http.Request, _ 
 		writeErr(w, http.StatusConflict, "a VM with this name is already being created")
 	case errors.Is(err, azure.ErrNotConfigured):
 		writeErr(w, http.StatusBadRequest, "Azure is not configured")
-	default:
-		// Everything else here is a refusal the person can act on — a missing
-		// subnet, a hub address no VM could reach, a name Azure would not
-		// accept, a subnet outside the watched groups. The message names what
-		// is wrong, so it is passed through rather than flattened.
+	case azure.IsRefusal(err):
+		// A refusal the person can act on — a missing subnet, a hub address no
+		// VM could reach, a name Azure would not accept, a subnet outside the
+		// watched groups. The message names what is wrong, so it is passed
+		// through rather than flattened.
 		writeErr(w, http.StatusBadRequest, err.Error())
+	default:
+		// Anything else is the hub's problem, not the caller's. A locked
+		// database answering 400 would read as "you typed something wrong".
+		writeErr(w, http.StatusInternalServerError, err.Error())
 	}
 }
 
@@ -492,7 +496,9 @@ func (s *server) handleDeleteProvision(w http.ResponseWriter, r *http.Request, _
 		writeErr(w, http.StatusNotFound, "no such provision")
 	case errors.Is(err, azure.ErrNotConfigured):
 		writeErr(w, http.StatusBadRequest, "Azure is not configured")
-	default:
+	case azure.IsRefusal(err):
 		writeErr(w, http.StatusBadRequest, err.Error())
+	default:
+		writeErr(w, http.StatusInternalServerError, err.Error())
 	}
 }

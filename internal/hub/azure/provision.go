@@ -56,7 +56,7 @@ func CreateVM(ctx context.Context, c *Client, p ProvisionConfig, req CreateReque
 		return err
 	}
 	if strings.TrimSpace(req.Name) == "" {
-		return fmt.Errorf("azure: a VM needs a name")
+		return Refuse("azure: a VM needs a name")
 	}
 	parts, err := ParseSubnetID(p.SubnetID)
 	if err != nil {
@@ -183,11 +183,11 @@ func vnetLocation(ctx context.Context, c *Client, vnetID string) (string, error)
 func parseImage(s string) (map[string]any, error) {
 	p := strings.Split(strings.TrimSpace(s), ":")
 	if len(p) != 4 {
-		return nil, fmt.Errorf("azure: an image looks like publisher:offer:sku:version, got %q", s)
+		return nil, Refuse("azure: an image looks like publisher:offer:sku:version, got %q", s)
 	}
 	for _, v := range p {
 		if v == "" {
-			return nil, fmt.Errorf("azure: an image looks like publisher:offer:sku:version, got %q", s)
+			return nil, Refuse("azure: an image looks like publisher:offer:sku:version, got %q", s)
 		}
 	}
 	return map[string]any{"publisher": p[0], "offer": p[1], "sku": p[2], "version": p[3]}, nil
@@ -201,18 +201,18 @@ func ValidateVMName(name string) error {
 	const rule = "a VM name is 1 to 64 characters of letters, digits, hyphens, underscores or " +
 		"periods, and cannot end with a hyphen or a period"
 	if name == "" || len(name) > 64 {
-		return fmt.Errorf("%s, got %q", rule, name)
+		return Refuse("%s, got %q", rule, name)
 	}
 	for _, r := range name {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
 			r == '-', r == '_', r == '.':
 		default:
-			return fmt.Errorf("%s, got %q", rule, name)
+			return Refuse("%s, got %q", rule, name)
 		}
 	}
 	if strings.HasSuffix(name, "-") || strings.HasSuffix(name, ".") {
-		return fmt.Errorf("%s, got %q", rule, name)
+		return Refuse("%s, got %q", rule, name)
 	}
 	return nil
 }

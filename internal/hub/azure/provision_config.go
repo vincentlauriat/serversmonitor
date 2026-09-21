@@ -1,6 +1,7 @@
 package azure
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -105,7 +106,7 @@ func (c ProvisionConfig) Ready() error {
 	if len(missing) == 0 {
 		return nil
 	}
-	return fmt.Errorf("provisioning is not configured: %s", strings.Join(missing, "; "))
+	return Refuse("provisioning is not configured: %s", strings.Join(missing, "; "))
 }
 
 // checkHubURL rejects an address no VM in Azure could resolve. Catching it
@@ -114,14 +115,14 @@ func (c ProvisionConfig) Ready() error {
 func checkHubURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return fmt.Errorf("the hub address must be an absolute http(s) URL, got %q", raw)
+		return Refuse("the hub address must be an absolute http(s) URL, got %q", raw)
 	}
 	host := strings.ToLower(u.Hostname())
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
-		return fmt.Errorf("a VM in Azure cannot reach %q; give the hub an address the VM resolves", raw)
+		return Refuse("a VM in Azure cannot reach %q; give the hub an address the VM resolves", raw)
 	}
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		return fmt.Errorf("a VM in Azure cannot reach %q; give the hub an address the VM resolves", raw)
+		return Refuse("a VM in Azure cannot reach %q; give the hub an address the VM resolves", raw)
 	}
 	return nil
 }
@@ -139,7 +140,7 @@ type SubnetParts struct {
 }
 
 func ParseSubnetID(id string) (SubnetParts, error) {
-	bad := fmt.Errorf("a subnet id looks like /subscriptions/…/resourceGroups/…/providers/"+
+	bad := Refuse("a subnet id looks like /subscriptions/…/resourceGroups/…/providers/"+
 		"Microsoft.Network/virtualNetworks/…/subnets/…, got %q", id)
 	p := strings.Split(strings.TrimPrefix(strings.TrimSpace(id), "/"), "/")
 	if len(p) != 10 ||
@@ -163,4 +164,25 @@ func ParseSubnetID(id string) (SubnetParts, error) {
 		Subnet:        p[9],
 		VNetID:        "/" + strings.Join(p[:8], "/"),
 	}, nil
+}
+
+// Refusal is something the person asked for that the hub will not do, and that
+// they can act on: a setting that is missing, a name Azure would reject, a
+// subnet outside the watched groups, a confirmation that does not match.
+//
+// It exists so the HTTP layer can tell those apart from a failure, which is
+// the hub's problem and answers 500. Without it a locked database would render
+// as "400 database is locked", which reads as "you typed something wrong".
+type Refusal struct{ Err error }
+
+func (r *Refusal) Error() string { return r.Err.Error() }
+func (r *Refusal) Unwrap() error { return r.Err }
+
+// Refuse wraps a message the person can act on.
+func Refuse(format string, a ...any) error { return &Refusal{Err: fmt.Errorf(format, a...)} }
+
+// IsRefusal reports whether the failure is the caller's to fix.
+func IsRefusal(err error) bool {
+	var r *Refusal
+	return errors.As(err, &r)
 }
