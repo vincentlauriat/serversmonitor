@@ -21,6 +21,11 @@ type Azurer interface {
 	// StartAction records the action and runs it off this request, returning
 	// the id of the row it wrote.
 	StartAction(resourceID string, action azure.Action) (int64, error)
+	// StartProvision records the run and creates the VM off this request.
+	StartProvision(name string) (int64, error)
+	// DeleteProvision removes what one run created, after the name has been
+	// typed back. It is the only destructive call in the whole API.
+	DeleteProvision(provisionID int64, confirmName string) error
 }
 
 type azureRow struct {
@@ -354,4 +359,108 @@ func (s *server) handleAzureActions(w http.ResponseWriter, r *http.Request, _ st
 		out = append(out, v)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"actions": out})
+}
+
+// --- lot 5: provisioning --------------------------------------------------
+
+type vmCreateInput struct {
+	Name string `json:"name"`
+}
+
+type vmDeleteInput struct {
+	ProvisionID int64  `json:"provision_id"`
+	ConfirmName string `json:"confirm_name"`
+}
+
+type provisionResourceView struct {
+	ARMID     string  `json:"arm_id"`
+	Kind      string  `json:"kind"`
+	CreatedAt string  `json:"created_at"`
+	DeletedAt *string `json:"deleted_at"`
+}
+
+type provisionView struct {
+	ID          int64                   `json:"id"`
+	Name        string                  `json:"name"`
+	HostID      *int64                  `json:"host_id"`
+	Status      string                  `json:"status"`
+	RequestedAt string                  `json:"requested_at"`
+	FinishedAt  *string                 `json:"finished_at"`
+	Error       string                  `json:"error"`
+	DeleteError string                  `json:"delete_error"`
+	Resources   []provisionResourceView `json:"resources"`
+}
+
+// handleStartProvision answers as soon as the row exists. Creating a VM is
+// minutes of work; an HTTP request held open that long dies in a proxy and
+// leaves the browser believing a success failed.
+func (s *server) handleStartProvision(w http.ResponseWriter, r *http.Request, _ store.User) {
+	var in vmCreateInput
+	if err := readJSON(w, r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	id, err := s.Azure.StartProvision(in.Name)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusAccepted, map[string]any{"provision_id": id})
+	case errors.Is(err, store.ErrProvisionInFlight):
+		writeErr(w, http.StatusConflict, "a VM with this name is already being created")
+	case errors.Is(err, azure.ErrNotConfigured):
+		writeErr(w, http.StatusBadRequest, "Azure is not configured")
+	default:
+		// Everything else here is a refusal the person can act on — a missing
+		// subnet, a hub address no VM could reach, a name Azure would not
+		// accept, a subnet outside the watched groups. The message names what
+		// is wrong, so it is passed through rather than flattened.
+		writeErr(w, http.StatusBadRequest, err.Error())
+	}
+}
+
+func (s *server) handleProvisions(w http.ResponseWriter, r *http.Request, _ store.User) {
+	ps, err := s.Store.ListAzureProvisions(20)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]provisionView, 0, len(ps))
+	for _, p := range ps {
+		v := provisionView{ID: p.ID, Name: p.Name, HostID: p.HostID, Status: p.Status,
+			RequestedAt: p.RequestedAt.Format(time.RFC3339), Error: p.Error,
+			DeleteError: p.DeleteError, Resources: make([]provisionResourceView, 0, len(p.Resources))}
+		if p.FinishedAt != nil {
+			f := p.FinishedAt.Format(time.RFC3339)
+			v.FinishedAt = &f
+		}
+		for _, r := range p.Resources {
+			rv := provisionResourceView{ARMID: r.ARMID, Kind: r.Kind,
+				CreatedAt: r.CreatedAt.Format(time.RFC3339)}
+			if r.DeletedAt != nil {
+				d := r.DeletedAt.Format(time.RFC3339)
+				rv.DeletedAt = &d
+			}
+			v.Resources = append(v.Resources, rv)
+		}
+		out = append(out, v)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"provisions": out})
+}
+
+func (s *server) handleDeleteProvision(w http.ResponseWriter, r *http.Request, _ store.User) {
+	var in vmDeleteInput
+	if err := readJSON(w, r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	err := s.Azure.DeleteProvision(in.ProvisionID, in.ConfirmName)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
+	case errors.Is(err, store.ErrNoSuchProvision):
+		writeErr(w, http.StatusNotFound, "no such provision")
+	case errors.Is(err, azure.ErrNotConfigured):
+		writeErr(w, http.StatusBadRequest, "Azure is not configured")
+	default:
+		writeErr(w, http.StatusBadRequest, err.Error())
+	}
 }
