@@ -70,14 +70,28 @@ var noisyMounts = []string{
 	"/System/Volumes/",
 	"/Volumes/Recovery",
 	"/private/var/folders/",
-	"/Library/Developer/CoreSimulator/Volumes/",
 	"/snap/",
 	"/var/lib/docker/",
 	"/run/",
 	"/boot/efi",
 }
 
+// Apple's developer tooling mounts images wherever its owner lives: simulator
+// runtimes under /Library/Developer, but device images under
+// /Users/<name>/Library/Developer/CoreDevice. An absolute prefix catches the
+// first and misses the second, which is how a DeviceFS mount turned up in the
+// disk graphs on a real Mac on 2026-09-18.
+//
+// So the rule is the directory, matched wherever it sits, rather than one
+// entry per product Apple ships next. It stays anchored on the full
+// "/Library/Developer/" so that a volume somebody named "Developer" — a disk
+// they chose to mount and want to see — is not swept up with it.
+const appleDeveloperDir = "/Library/Developer/"
+
 func noisyMount(mount string) bool {
+	if strings.Contains(mount, appleDeveloperDir) {
+		return true
+	}
 	for _, p := range noisyMounts {
 		if mount == p || strings.HasPrefix(mount, p) {
 			return true
