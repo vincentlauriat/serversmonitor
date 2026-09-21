@@ -37,6 +37,11 @@ type Hub struct {
 	acfg      atomic.Pointer[azure.Config]
 	aclient   atomic.Pointer[azure.Client]
 	azureBase string // tests only; empty means the real Azure
+	// azureSleep replaces the client's wait, so a test can exercise the
+	// async poll without spending its schedule. Tests only; nil means the
+	// real clock, and every retry and poll paces itself as it would in
+	// production.
+	azureSleep func(context.Context, time.Duration) bool
 	// akick wakes the run loop when the settings change, so a save syncs now
 	// rather than at the next tick. Buffered and sent to without blocking: a
 	// reload must never wait on a loop that is not running yet.

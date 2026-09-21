@@ -149,8 +149,15 @@ func Do(ctx context.Context, c *Client, armID, resourceType string, a Action) er
 	if !ok {
 		return fmt.Errorf("%w: %s cannot be asked to %s", ErrNotActionable, resourceType, a)
 	}
-	_, err := c.PostAction(ctx, armID+"/"+verb, url.Values{"api-version": {p.apiVersion}})
-	return err
+	// Microsoft.Web answers an action synchronously; Microsoft.Compute answers
+	// 202 and finishes minutes later. Await handles both, and a hub that
+	// returned on the 202 would report a VM stopped while it was still
+	// shutting down — and then read a state back that contradicted it.
+	resp, err := c.PostActionAsync(ctx, armID+"/"+verb, url.Values{"api-version": {p.apiVersion}})
+	if err != nil {
+		return err
+	}
+	return Await(ctx, c, resp)
 }
 
 // ReadState asks Azure what the resource's state is now. It returns nil when
