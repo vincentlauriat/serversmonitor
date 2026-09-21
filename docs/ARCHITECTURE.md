@@ -134,6 +134,8 @@ stockés en chaînes RFC 3339 UTC, donc l'ordre lexical est l'ordre chronologiqu
 | `azure_resources` | Une ligne par ressource, telle que le dernier balayage réussi l'a vue. `state` et `deleted_at` sont nullables. |
 | `azure_costs` | Une ligne par (ressource, mois). **Aucune clé étrangère, délibérément.** |
 | `azure_actions` | Une ligne par démarrage, arrêt ou redémarrage, écrite avant l'appel. Un index unique partiel n'en autorise qu'une en vol par ressource. |
+| `azure_provisions` | Une ligne par tentative de création de VM, écrite avant le premier appel. Un index unique partiel n'en autorise qu'une en vol par nom. |
+| `azure_provision_resources` | Une ligne par ressource créée par un provisioning, écrite dès qu'elle existe. `deleted_at` est posé quand une personne la supprime, jamais par le hub. |
 | `azure_sync` | Une ligne par périmètre : le dernier inventaire et la dernière requête de coûts ont-ils abouti, et sinon pourquoi. |
 
 Toutes les tables de séries cascadent depuis `hosts`, et `deliveries` cascade depuis `alert_events`.
@@ -257,8 +259,8 @@ faux renvoie `AADSTS900021`, et ce message parvient intact au navigateur, trace 
 
 Le lot 4 en ajoute trois : démarrer, arrêter, redémarrer, sur `Microsoft.Web/sites`. La sandbox ne
 contient aucune machine virtuelle : des actions VM auraient été livrées intestables. La
-correspondance type → verbe est une table, et le lot 5 y ajoutera les VM comme une ligne, pas comme
-une refonte.
+correspondance type → verbe est une table, et le lot 5 y ajoute les VM comme une ligne — mais pas
+seulement : voir plus bas.
 
 **Reader ne suffit plus.** Chaque action est `Microsoft.Web/sites/start/action` ou une cousine :
 agir exige **Website Contributor** en plus de Reader. Les deux sont demandés d'un coup — un second
@@ -292,6 +294,105 @@ c'est-à-dire au pire moment.
 L'identifiant voyage dans le corps de la requête, pas dans le chemin : un id ARM est fait
 essentiellement de slashes, un joker de `ServeMux` (Go 1.22) ne les traverse pas, et le
 pourcent-encoder lierait la route au moment où `net/http` déséchappe le chemin.
+
+**Le lot 4 avait sous-promis, et le lot 5 a payé.** Ajouter les VM devait être une ligne dans la
+table type → verbe. La ligne est bien réelle — `start`, `deallocate`, `restart` — mais deux
+constantes de paquet étaient taillées pour Microsoft.Web et silencieusement fausses pour Compute :
+
+- L'`api-version`. `2023-12-01` est une version Web, et `Microsoft.Compute` ne la publie pas du tout.
+- Le lecteur d'état. Un site a `properties.state` ; l'état d'alimentation d'une VM est dans
+  `/instanceView`, sous `statuses[].code`, écrit `PowerState/running`. Le lecteur Web appliqué à une
+  VM renvoyait `(nil, nil)` — « personne ne sait » — c'est-à-dire un **vide silencieux**,
+  indiscernable d'un état réellement non lu.
+
+Les deux appartiennent désormais au type de ressource, dans une table `providers` unique qui porte
+ensemble l'api-version, les verbes, l'URL d'état et le lecteur d'état. Ajouter un troisième
+fournisseur est une ligne ; en partager une constante entre deux était le bug.
+
+### Opérations asynchrones
+
+Compute répond `202 Accepted` et termine des minutes plus tard. Le chemin d'appel renvoie donc la
+réponse entière — statut et en-têtes — et pas seulement le corps, et `Await` la suit jusqu'à son
+état terminal.
+
+`Azure-AsyncOperation` et `Location` ne sont pas deux graphies d'une même chose. Le premier porte un
+champ `status` et fait autorité ; le second n'a aucun statut et cesse simplement de répondre 202
+quand le *résultat* existe — ce qui, pour une création, arrive avant que la machine ne soit prête.
+Le premier l'emporte quand les deux sont envoyés. Un 202 sans aucun des deux est une erreur qui les
+nomme, jamais un succès silencieux.
+
+Une opération en échec est une `*OperationError`, délibérément pas l'`*Error` des échecs HTTP : le
+sondage qui a rapporté la nouvelle a répondu 200, donc `StatusOf` ne doit pas transformer une
+création de VM ratée en succès HTTP. Un contexte annulé n'est ni l'un ni l'autre : le hub qui
+s'arrête n'est pas Azure qui refuse.
+
+**`running` veut enfin dire quelque chose.** Chaque action du lot 4 passait `pending` → `running` →
+terminée à l'intérieur d'un seul appel HTTP : aucune page ne pouvait observer l'état intermédiaire.
+L'arrêt d'une VM reste `running` le temps du sondage.
+
+### Provisionner une VM
+
+**Le hub ne crée jamais de réseau.** Relu dans la définition de rôle vivante le 2026-09-21,
+`Virtual Machine Contributor` accorde `networkInterfaces/*`, `virtualNetworks/read` et
+`subnets/join/action` — et aucune écriture ailleurs dans `Microsoft.Network`. Pas de VNet, pas d'IP
+publique, pas de NSG. Le subnet est configuré ; le hub le lit et le rejoint, ou refuse.
+
+**La VM n'a pas d'IP publique, et n'en a pas besoin.** L'agent appelle vers l'extérieur par un
+WebSocket sortant : une machine sans adresse entrante est exactement aussi surveillable — et c'est
+une chose de moins exposée. Personne ne peut s'y connecter en SSH depuis l'extérieur. Le corollaire
+est écrit là où se trouve le réglage : le hub doit avoir une adresse que la VM peut joindre, donc
+`localhost` est refusé plutôt que découvert vingt minutes plus tard sous la forme d'une machine qui
+a démarré et n'a jamais rappelé.
+
+**Mais l'absence d'adresse entrante n'est pas l'accès sortant, et Azure a changé ça sous nos
+pieds.** La création du subnet de la sandbox, le 2026-09-21, a renvoyé
+`defaultOutboundAccess: false` : Microsoft a retiré le SNAT sortant implicite pour les nouveaux
+déploiements le 2025-09-30. Une VM sans IP publique dans un subnet créé aujourd'hui n'atteint pas
+du tout internet, donc l'agent ne pourrait jamais appeler le hub — la seule chose que ce lot existe
+pour rendre possible. Mesuré en relisant le subnet, pas supposé.
+
+Poser `defaultOutboundAccess: true` explicitement est encore accepté, et c'est ce que porte
+désormais le subnet de la sandbox. C'est un mécanisme déprécié en sursis ; la réponse durable est
+une NAT Gateway sur le subnet, à environ 32 €/mois plus le trafic — de l'argent réel dans une
+sandbox dont le sujet est le coût. Le hub ne peut créer ni l'une ni l'autre : ce sont des écritures
+`Microsoft.Network` hors de `Virtual Machine Contributor`. C'est une propriété du réseau que
+désigne le réglage, et le hub ne la vérifie pas plus qu'il ne peut la corriger.
+
+Créer, c'est deux `PUT` — la NIC, puis la VM — précédés d'un `GET` sur le VNet du subnet, car un
+subnet n'a pas de localisation propre et choisir une région par défaut créerait la NIC là où le
+subnet n'est pas. Le disque OS est créé avec `deleteOption: Delete` : il ne peut donc pas survivre à
+la VM, il n'y a pas d'ordre de suppression à rater et le résidu le plus coûteux possible ne peut
+pas exister.
+
+Chaque ressource porte `createdBy=ServersMonitor` ; la VM porte en plus `smHostId`.
+
+**Le hub enregistre les orphelins. Il ne les annule pas.** Une exécution qui meurt entre la NIC et
+la VM laisse une ressource derrière elle. Supprimer est la seule chose que les lots 1 à 4 ne font
+jamais, et placer la première suppression automatique dans le chemin d'échec — le moins éprouvé du
+lot, et précisément celui où la vue qu'a le hub de ce qu'il a créé est la moins fiable — c'est
+exactement comme ça qu'un hub supprime ce qu'il n'aurait pas dû. Les résidus restent au dossier,
+nommés, et la page les montre avec le bouton qui les enlève. Un test vérifie qu'**aucun DELETE n'est
+jamais envoyé** dans le chemin d'échec.
+
+**La ligne d'hôte est créée avant qu'Azure ne soit touché**, pour qu'une VM qui démarre et se
+connecte se trouve attendue. Une exécution refusée pour quelque raison que ce soit ne crée rien du
+tout — ni ligne d'hôte, ni ligne de provisioning.
+
+**Une VM que le hub crée doit être une VM que le hub peut montrer.** Un subnet dans un groupe de
+ressources que personne ne synchronise est refusé : la machine n'apparaîtrait ni dans l'inventaire
+ni dans les coûts.
+
+**Le jeton va dans cloud-init et nulle part ailleurs.** Il voyage dans `customData` sous forme de
+fichier en mode `0600`, pas sur une ligne de commande — une ligne de commande est visible dans `ps`
+et dans le journal de sortie de cloud-init, lisible par tout le monde. Il est propre à un hôte et
+révocable en un clic. Le magasin ne garde qu'une empreinte, jamais le jeton : le test qui prouve
+qu'il ne fuit pas doit donc aller le relire dans le corps de la requête.
+
+**La suppression est déclenchée par une personne, confirmée par le nom, et restreinte par le tag.**
+La VM d'abord, la NIC ensuite, car Azure refuse de supprimer une NIC encore attachée. Chaque tag est
+vérifié dans Azure avant que quoi que ce soit ne soit supprimé — une lecture en échec est un refus,
+car ne pas savoir si une ressource est la nôtre n'est pas la permission de la supprimer. Une
+ressource déjà disparue est enregistrée comme supprimée plutôt que rapportée comme un échec.
 
 ## Le processus hub
 

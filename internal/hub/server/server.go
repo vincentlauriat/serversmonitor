@@ -89,6 +89,12 @@ func New(d Deps) http.Handler {
 	mux.Handle("POST /api/v1/azure/test", s.auth(s.handleTestAzure))
 	mux.Handle("POST /api/v1/azure/actions", s.auth(s.handleStartAzureAction))
 	mux.Handle("GET /api/v1/azure/actions", s.auth(s.handleAzureActions))
+	// The provision id travels in the body for the delete, like an action's
+	// resource id: nothing here goes in a path segment that a ServeMux
+	// wildcard would have to match.
+	mux.Handle("POST /api/v1/azure/vms", s.auth(s.handleStartProvision))
+	mux.Handle("GET /api/v1/azure/vms", s.auth(s.handleProvisions))
+	mux.Handle("POST /api/v1/azure/vms/delete", s.auth(s.handleDeleteProvision))
 
 	mux.Handle("GET /api/v1/settings", s.auth(s.handleGetSettings))
 	mux.Handle("PUT /api/v1/settings", s.auth(s.handlePutSettings))

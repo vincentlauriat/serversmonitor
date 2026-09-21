@@ -108,9 +108,13 @@ export interface AzureAction {
  * hand: two short lists that disagree are visible, a generated one is not.
  */
 export function actionsFor(resourceType: string): string[] {
-  return resourceType.toLowerCase() === 'microsoft.web/sites'
-    ? ['start', 'stop', 'restart']
-    : [];
+  switch (resourceType.toLowerCase()) {
+    case 'microsoft.web/sites':
+    case 'microsoft.compute/virtualmachines':
+      return ['start', 'stop', 'restart'];
+    default:
+      return [];
+  }
 }
 
 /** True while this resource has an action the hub has not finished. */
@@ -143,4 +147,79 @@ export function actionOutcome(a: AzureAction): string {
 /** Stopping or restarting takes a running site offline; starting one cannot. */
 export function needsConfirmation(action: string): boolean {
   return action === 'stop' || action === 'restart';
+}
+
+/** One resource a provision created, as the record holds it. */
+export interface ProvisionResource {
+  arm_id: string;
+  kind: string;
+  created_at: string;
+  deleted_at: string | null;
+}
+
+/** One attempt at creating a VM. */
+export interface Provision {
+  id: number;
+  name: string;
+  host_id: number | null;
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'interrupted';
+  requested_at: string;
+  finished_at: string | null;
+  error: string;
+  delete_error: string;
+  resources: ProvisionResource[];
+}
+
+/**
+ * What the record says happened. An interrupted run is the one worth spelling
+ * out: the hub died mid-creation and never resumed, so whatever it had
+ * already created is still there and still costing money.
+ */
+export function provisionOutcome(p: Provision): string {
+  switch (p.status) {
+    case 'pending':
+    case 'running':
+      return 'creating…';
+    case 'succeeded':
+      return 'created';
+    case 'failed':
+      return p.error || 'failed';
+    case 'interrupted':
+      return 'the hub stopped mid-creation; it was not resumed';
+    default:
+      return p.status;
+  }
+}
+
+/**
+ * The resources a run created and nobody has deleted. These are what a failed
+ * or interrupted run leaves behind, and what the bill is made of.
+ */
+export function leftovers(p: Provision): ProvisionResource[] {
+  return p.resources.filter((r) => r.deleted_at === null);
+}
+
+/**
+ * Deleting is confirmed by typing the name, not by a dialog dismissed by
+ * reflex. Surrounding spaces are forgiven — a pasted name often carries one —
+ * and nothing else is.
+ */
+export function deleteConfirmed(typed: string, name: string): boolean {
+  return typed.trim() === name && name !== '';
+}
+
+/**
+ * Whether the New VM form can be used, and what to say when it cannot. The
+ * message names the setting to go and fill in: a greyed-out button that
+ * explains nothing is the failure this replaces.
+ */
+export function provisionBlockedReason(
+  mode: string | undefined,
+  inventoryOK: boolean | undefined
+): string {
+  if (!mode || mode === 'off') return 'Azure is off. Configure it under Settings → Azure.';
+  if (inventoryOK !== true) {
+    return 'The last inventory did not succeed, so the hub cannot show what it would create.';
+  }
+  return '';
 }

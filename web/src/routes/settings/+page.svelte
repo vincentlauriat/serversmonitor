@@ -558,6 +558,47 @@
         </div>
       </div>
 
+      <div class={box}>
+        <h3 class="mb-2 text-sm font-semibold">Creating virtual machines</h3>
+        <p class="mb-3 text-xs text-zinc-500">
+          Only needed to create VMs from the Azure page. Leaving these empty costs nothing: they are
+          checked when a VM is asked for, not when these settings are saved.
+        </p>
+        <div class="grid max-w-2xl gap-3 sm:grid-cols-2">
+          <label class="block sm:col-span-2">
+            Subnet ID
+            <input class={inp} bind:value={az.provision_subnet_id}
+              placeholder="/subscriptions/…/virtualNetworks/…/subnets/default" />
+            <span class="text-xs text-zinc-500">
+              The hub never creates a network — the role it is given cannot. Create a VNet with a
+              subnet yourself and paste the subnet's id here; the VM joins it and gets no public IP.
+            </span>
+          </label>
+          <label class="block sm:col-span-2">
+            Hub address the agent dials
+            <input class={inp} bind:value={az.provision_hub_url} placeholder="https://monitor.example.net" />
+            <span class="text-xs text-zinc-500">
+              The hub does not guess its own address. A VM in Azure cannot reach localhost, so a
+              loopback address here is refused rather than discovered twenty minutes later.
+            </span>
+          </label>
+          <label class="block">VM size<input class={inp} bind:value={az.provision_size} placeholder="Standard_B1s" /></label>
+          <label class="block">Administrator user<input class={inp} bind:value={az.provision_admin_user} placeholder="azureuser" /></label>
+          <label class="block sm:col-span-2">
+            Image
+            <input class={inp} bind:value={az.provision_image} placeholder="Canonical:ubuntu-24_04-lts:server:latest" />
+          </label>
+          <label class="block sm:col-span-2">
+            SSH public key
+            <textarea class={inp} rows="2" bind:value={az.provision_ssh_key} placeholder="ssh-ed25519 AAAA…"></textarea>
+            <span class="text-xs text-zinc-500">
+              There is no password login and no public IP, so this is the only way into the machine,
+              and only from inside the network.
+            </span>
+          </label>
+        </div>
+      </div>
+
       <div class="flex gap-2">
         <button class="rounded bg-zinc-900 px-3 py-1.5 text-white dark:bg-zinc-100 dark:text-zinc-900">Save</button>
         <button

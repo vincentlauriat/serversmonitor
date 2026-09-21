@@ -41,7 +41,7 @@ func (h *Hub) ReloadAzure() {
 			cached.WithEndpointForTests(h.azureBase)
 		}
 	}
-	h.aclient.Store(azure.NewClient(src, azure.Options{Base: h.azureBase}))
+	h.aclient.Store(azure.NewClient(src, azure.Options{Base: h.azureBase, Sleep: h.azureSleep}))
 	h.kickAzure()
 }
 

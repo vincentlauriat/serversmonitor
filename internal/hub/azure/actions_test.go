@@ -195,3 +195,105 @@ func TestReadStateFailureIsAnError(t *testing.T) {
 		t.Fatal("a failed read-back must be an error, not a silent nil")
 	}
 }
+
+// --- lot 5, task 2: api-version and state are properties of the type -------
+
+const vmID = "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1"
+
+func TestAVMActionUsesTheComputeVerbAndTheComputeAPIVersion(t *testing.T) {
+	// Two things at once, because getting one right and the other wrong is a
+	// 400 either way: stop is "deallocate" on a VM, and 2023-12-01 is a Web
+	// api-version that Microsoft.Compute does not publish at all.
+	for _, tc := range []struct{ action, verb string }{
+		{"start", "start"}, {"stop", "deallocate"}, {"restart", "restart"},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			var gotURL string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotURL = r.URL.String()
+			}))
+			defer srv.Close()
+			c := NewClient(staticSource("tok"), Options{Base: srv.URL})
+			if err := Do(context.Background(), c, vmID, "Microsoft.Compute/virtualMachines", Action(tc.action)); err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			want := vmID + "/" + tc.verb + "?api-version=" + computeAPIVersion
+			if gotURL != want {
+				t.Fatalf("url = %s\nwant %s", gotURL, want)
+			}
+		})
+	}
+}
+
+func TestASiteActionKeepsTheWebAPIVersion(t *testing.T) {
+	// The counter-assertion to the one above: moving the version onto the type
+	// must not move it for the type that already worked.
+	var gotURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.String()
+	}))
+	defer srv.Close()
+	c := NewClient(staticSource("tok"), Options{Base: srv.URL})
+	if err := Do(context.Background(), c, siteID, "microsoft.web/sites", ActionStop); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if want := siteID + "/stop?api-version=" + webAPIVersion; gotURL != want {
+		t.Fatalf("url = %s\nwant %s", gotURL, want)
+	}
+}
+
+func TestAVMStateComesFromTheInstanceView(t *testing.T) {
+	var gotURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.String()
+		fmt.Fprint(w, `{"statuses":[
+			{"code":"ProvisioningState/succeeded","displayStatus":"Provisioning succeeded"},
+			{"code":"PowerState/running","displayStatus":"VM running"}]}`)
+	}))
+	defer srv.Close()
+	c := NewClient(staticSource("tok"), Options{Base: srv.URL})
+	got, err := ReadState(context.Background(), c, vmID, "Microsoft.Compute/virtualMachines")
+	if err != nil {
+		t.Fatalf("ReadState: %v", err)
+	}
+	if got == nil || *got != "running" {
+		t.Fatalf("state = %v, want running", got)
+	}
+	if want := vmID + "/instanceView?api-version=" + computeAPIVersion; gotURL != want {
+		t.Fatalf("url = %s\nwant %s", gotURL, want)
+	}
+}
+
+func TestAProvisioningStateIsNotAPowerState(t *testing.T) {
+	// An instance view without a PowerState line means nobody can say whether
+	// the machine is on. That is nil — never "stopped", and never borrowed
+	// from the provisioning state sitting right next to it.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"statuses":[{"code":"ProvisioningState/succeeded"}]}`)
+	}))
+	defer srv.Close()
+	c := NewClient(staticSource("tok"), Options{Base: srv.URL})
+	got, err := ReadState(context.Background(), c, vmID, "Microsoft.Compute/virtualMachines")
+	if err != nil {
+		t.Fatalf("ReadState: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("state = %q, want nil", *got)
+	}
+}
+
+func TestTheWebReaderDoesNotUnderstandAnInstanceView(t *testing.T) {
+	// The trap this task exists to close, written down: before the state
+	// reader belonged to the type, a VM read through the Web reader returned
+	// (nil, nil) — "nobody knows" — which is indistinguishable from a genuinely
+	// unread state and would have shipped as a silent empty.
+	body := []byte(`{"statuses":[{"code":"PowerState/running"}]}`)
+	got, err := providers["microsoft.web/sites"].readState(body)
+	if err != nil || got != nil {
+		t.Fatalf("the Web reader returned %v, %v — it must find nothing here", got, err)
+	}
+	got, err = providers["microsoft.compute/virtualmachines"].readState(body)
+	if err != nil || got == nil || *got != "running" {
+		t.Fatalf("the Compute reader returned %v, %v — it must find running", got, err)
+	}
+}

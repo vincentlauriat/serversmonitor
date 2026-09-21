@@ -145,6 +145,13 @@ func (f *azureFake) failsFrom(n int) {
 
 func azureHub(t *testing.T, f *azureFake) *Hub {
 	t.Helper()
+	return azureHubAt(t, f.srv.URL)
+}
+
+// azureHubAt is the same hub against any fake ARM, so a lot 5 fake that speaks
+// Compute can reuse it without pretending to be the lot 3 catalogue.
+func azureHubAt(t *testing.T, base string) *Hub {
+	t.Helper()
 	h, err := New(config.Config{DataDir: t.TempDir()}, "test", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +162,7 @@ func azureHub(t *testing.T, f *azureFake) *Hub {
 		InventoryEveryMin: 15, CostEveryMin: 60}); err != nil {
 		t.Fatal(err)
 	}
-	h.azureBase = f.srv.URL
+	h.azureBase = base
 	h.readBack = 200 * time.Millisecond // the retry ladder is lot 3's business, not this one's
 	h.ReloadAzure()
 	return h

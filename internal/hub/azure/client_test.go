@@ -311,3 +311,111 @@ func TestStatusSurvivesABodyThatIsNotTheArmEnvelope(t *testing.T) {
 		t.Fatalf("StatusOf = %d, want 403", StatusOf(err))
 	}
 }
+
+// --- lot 5, task 1: the call path returns a response, not just a body -------
+
+func TestAnAsyncAnswerKeepsItsStatusAndHeaders(t *testing.T) {
+	// A 202 is indistinguishable from a 200 when only the body comes back, and
+	// Azure-AsyncOperation is the only way to learn how the operation ended.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("method = %s, want PUT", r.Method)
+		}
+		w.Header().Set("Azure-AsyncOperation", "https://management.azure.com/op/1")
+		w.Header().Set("Retry-After", "3")
+		w.WriteHeader(http.StatusAccepted)
+		io.WriteString(w, `{"properties":{"provisioningState":"Creating"}}`)
+	}))
+	defer srv.Close()
+
+	c := NewClient(staticSource("tok"), Options{Base: srv.URL})
+	resp, err := c.PutAsync(context.Background(), "/subscriptions/s/…/nic", nil, map[string]any{"location": "westeurope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.Status)
+	}
+	if got := resp.Header.Get("Azure-AsyncOperation"); got != "https://management.azure.com/op/1" {
+		t.Fatalf("Azure-AsyncOperation = %q", got)
+	}
+	if got := resp.Header.Get("Retry-After"); got != "3" {
+		t.Fatalf("Retry-After = %q", got)
+	}
+	if !strings.Contains(string(resp.Body), "Creating") {
+		t.Fatalf("body = %q", resp.Body)
+	}
+}
+
+func TestASynchronousAnswerStillCarriesItsBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"id":"/subscriptions/s/…/nic"}`)
+	}))
+	defer srv.Close()
+
+	c := NewClient(staticSource("tok"), Options{Base: srv.URL})
+	resp, err := c.PutAsync(context.Background(), "/subscriptions/s/…/nic", nil, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.Status)
+	}
+	if !strings.Contains(string(resp.Body), "/nic") {
+		t.Fatalf("body = %q", resp.Body)
+	}
+}
+
+func TestAPutRepeatsA5xxAndAnActionDoesNot(t *testing.T) {
+	// The two policies, against one fake, because the difference is the whole
+	// reason both exist: a PUT on a named id converges, a POST …/stop does not.
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+		io.WriteString(w, `{"error":{"code":"BadGateway","message":"upstream"}}`)
+	}))
+	defer srv.Close()
+
+	var mu sync.Mutex
+	var slept []time.Duration
+	c := NewClient(staticSource("tok"), Options{Base: srv.URL, Attempts: 3, Sleep: noSleep(&slept, &mu)})
+
+	if _, err := c.PutAsync(context.Background(), "/put", nil, map[string]any{}); err == nil {
+		t.Fatal("want an error")
+	}
+	if got := calls.Swap(0); got != 3 {
+		t.Fatalf("PUT attempts = %d, want 3 (a PUT on a named id is idempotent)", got)
+	}
+
+	if _, err := c.PostActionAsync(context.Background(), "/act", nil); err == nil {
+		t.Fatal("want an error")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("action attempts = %d, want exactly 1 (a 5xx on an action may have landed)", got)
+	}
+}
+
+func TestADeleteRepeatsA5xxToo(t *testing.T) {
+	// Deleting a named id is idempotent in the same way: the second DELETE of a
+	// resource already gone is a 404, not a second deletion.
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("method = %s, want DELETE", r.Method)
+		}
+		calls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	var mu sync.Mutex
+	var slept []time.Duration
+	c := NewClient(staticSource("tok"), Options{Base: srv.URL, Attempts: 2, Sleep: noSleep(&slept, &mu)})
+	if _, err := c.DeleteAsync(context.Background(), "/gone", nil); err == nil {
+		t.Fatal("want an error")
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("DELETE attempts = %d, want 2", got)
+	}
+}

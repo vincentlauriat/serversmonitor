@@ -20,6 +20,29 @@ type fakeAzurer struct {
 	started   int
 	actionID  int64
 	actionErr error
+
+	// Lot 5.
+	provisioned  int
+	provisionID  int64
+	provisionErr error
+	deleted      int
+	deleteName   string
+	deleteID     int64
+	deleteErr    error
+}
+
+func (f *fakeAzurer) StartProvision(name string) (int64, error) {
+	f.provisioned++
+	if f.provisionErr != nil {
+		return 0, f.provisionErr
+	}
+	return f.provisionID, nil
+}
+
+func (f *fakeAzurer) DeleteProvision(provisionID int64, confirmName string) error {
+	f.deleted++
+	f.deleteID, f.deleteName = provisionID, confirmName
+	return f.deleteErr
 }
 
 func (f *fakeAzurer) StartAction(resourceID string, action azure.Action) (int64, error) {
@@ -554,5 +577,175 @@ func TestTheActionLogIsReadable(t *testing.T) {
 	}
 	if out.Actions[0].Status != "failed" || !strings.Contains(out.Actions[0].Error, "Website Contributor") {
 		t.Fatalf("the log must carry Azure's own words: %+v", out.Actions[0])
+	}
+}
+
+// --- lot 5: provisioning ---
+
+func TestProvisioningRequiresAuth(t *testing.T) {
+	for _, path := range []string{"/api/v1/azure/vms", "/api/v1/azure/vms/delete"} {
+		r := newRig(t)
+		res, _ := r.do(t, "POST", path, map[string]any{"name": "vm1", "provision_id": 1})
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("%s = %d, want 401", path, res.StatusCode)
+		}
+		az := r.azure.(*fakeAzurer)
+		if az.provisioned != 0 || az.deleted != 0 {
+			t.Fatalf("%s reached the hub anyway", path)
+		}
+	}
+}
+
+func TestAcceptedReturnsTheProvisionID(t *testing.T) {
+	r := newAzureRig(t)
+	r.azure.(*fakeAzurer).provisionID = 4
+	res, body := r.do(t, "POST", "/api/v1/azure/vms", map[string]any{"name": "vm-test"})
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, body %s", res.StatusCode, body)
+	}
+	var out struct {
+		ProvisionID int64 `json:"provision_id"`
+	}
+	json.Unmarshal(body, &out)
+	if out.ProvisionID != 4 {
+		t.Fatalf("provision_id = %d", out.ProvisionID)
+	}
+}
+
+func TestProvisionErrorsMapToStatuses(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"already running", store.ErrProvisionInFlight, http.StatusConflict},
+		{"azure off", azure.ErrNotConfigured, http.StatusBadRequest},
+		{"not configured", azure.Refuse("provisioning is not configured: a subnet id"), http.StatusBadRequest},
+		// A failure that is not a refusal is the hub's problem, not the caller's.
+		{"database locked", errors.New("database is locked"), http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newAzureRig(t)
+			r.azure.(*fakeAzurer).provisionErr = tc.err
+			res, body := r.do(t, "POST", "/api/v1/azure/vms", map[string]any{"name": "vm-test"})
+			if res.StatusCode != tc.want {
+				t.Fatalf("status = %d, want %d (%s)", res.StatusCode, tc.want, body)
+			}
+		})
+	}
+}
+
+func TestARefusalNamesWhatIsMissing(t *testing.T) {
+	// The message is the whole point of the 400: "bad request" tells nobody
+	// which setting to go and fill in.
+	r := newAzureRig(t)
+	r.azure.(*fakeAzurer).provisionErr = azure.Refuse(
+		"provisioning is not configured: a subnet id; the hub address the agent should dial")
+	_, body := r.do(t, "POST", "/api/v1/azure/vms", map[string]any{"name": "vm-test"})
+	for _, want := range []string{"subnet", "hub address"} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("the body must name %q: %s", want, body)
+		}
+	}
+}
+
+func TestTheDeleteConfirmationReachesTheHubVerbatim(t *testing.T) {
+	// The server does not compare the name itself: the hub holds the record,
+	// and two places deciding what counts as a match is one too many.
+	r := newAzureRig(t)
+	res, body := r.do(t, "POST", "/api/v1/azure/vms/delete",
+		map[string]any{"provision_id": 9, "confirm_name": " vm-test "})
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, body %s", res.StatusCode, body)
+	}
+	az := r.azure.(*fakeAzurer)
+	if az.deleteID != 9 || az.deleteName != " vm-test " {
+		t.Fatalf("hub got id %d name %q", az.deleteID, az.deleteName)
+	}
+}
+
+func TestDeleteErrorsMapToStatuses(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"unknown provision", store.ErrNoSuchProvision, http.StatusNotFound},
+		{"wrong name", azure.Refuse("the name typed does not match"), http.StatusBadRequest},
+		{"database locked", errors.New("database is locked"), http.StatusInternalServerError},
+		{"azure off", azure.ErrNotConfigured, http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newAzureRig(t)
+			r.azure.(*fakeAzurer).deleteErr = tc.err
+			res, body := r.do(t, "POST", "/api/v1/azure/vms/delete",
+				map[string]any{"provision_id": 1, "confirm_name": "vm-test"})
+			if res.StatusCode != tc.want {
+				t.Fatalf("status = %d, want %d (%s)", res.StatusCode, tc.want, body)
+			}
+		})
+	}
+}
+
+func TestNoProvisionsRendersAsAnEmptyArray(t *testing.T) {
+	// null would make the page's `provisions.map` throw, which reads to the
+	// user as the page being broken rather than as nothing having happened.
+	r := newAzureRig(t)
+	res, body := r.do(t, "GET", "/api/v1/azure/vms", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", res.StatusCode)
+	}
+	if !strings.Contains(string(body), `"provisions":[]`) {
+		t.Fatalf("body = %s", body)
+	}
+}
+
+func TestProvisionsCarryTheirResourcesAndErrors(t *testing.T) {
+	r := newAzureRig(t)
+	now := time.Now().UTC()
+	id, err := r.st.StartAzureProvision("vm-test", nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.st.RecordAzureProvisionResource(id, "/subs/…/nic", "nic", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.st.FinishAzureProvision(id, "failed", "quota exceeded", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.st.SetAzureProvisionDeleteError(id, "not tagged createdBy=ServersMonitor"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, body := r.do(t, "GET", "/api/v1/azure/vms", nil)
+	var out struct {
+		Provisions []struct {
+			Status      string `json:"status"`
+			Error       string `json:"error"`
+			DeleteError string `json:"delete_error"`
+			Resources   []struct {
+				ARMID     string  `json:"arm_id"`
+				Kind      string  `json:"kind"`
+				DeletedAt *string `json:"deleted_at"`
+			} `json:"resources"`
+		} `json:"provisions"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Provisions) != 1 {
+		t.Fatalf("provisions = %s", body)
+	}
+	p := out.Provisions[0]
+	if p.Status != "failed" || p.Error != "quota exceeded" {
+		t.Fatalf("provision = %+v", p)
+	}
+	// The leftover is named, which is what makes §4 usable: a failed run the
+	// page cannot name is a bill nobody can trace.
+	if len(p.Resources) != 1 || p.Resources[0].Kind != "nic" || p.Resources[0].DeletedAt != nil {
+		t.Fatalf("resources = %+v", p.Resources)
+	}
+	if !strings.Contains(p.DeleteError, "createdBy") {
+		t.Fatalf("delete_error = %q", p.DeleteError)
 	}
 }

@@ -200,4 +200,13 @@ export interface AzureSettings {
   inventory_every_min: number;
   cost_every_min: number;
   budget_monthly: number;
+  // Provisioning. Saved with the rest and validated only when a VM is asked
+  // for: a hub used for the read-only inventory must be able to save with all
+  // of these empty.
+  provision_subnet_id: string;
+  provision_hub_url: string;
+  provision_size: string;
+  provision_image: string;
+  provision_admin_user: string;
+  provision_ssh_key: string;
 }

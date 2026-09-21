@@ -24,7 +24,7 @@ docker:
 
 release: web
 	mkdir -p release
-	for os_arch in linux/amd64 linux/arm64 darwin/arm64; do \
+	for os_arch in linux/amd64 linux/arm64 darwin/arm64 darwin/amd64; do \
 	  os=$${os_arch%/*}; arch=$${os_arch#*/}; \
 	  GOOS=$$os GOARCH=$$arch go build -ldflags '$(LDFLAGS)' -o release/smhub-$$os-$$arch ./cmd/smhub; \
 	  GOOS=$$os GOARCH=$$arch go build -ldflags '$(LDFLAGS)' -o release/smagent-$$os-$$arch ./cmd/smagent; \

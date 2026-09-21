@@ -94,13 +94,17 @@ delivered to a real Teams channel from this code. Office 365 connector URLs
 ## Azure
 
 ServersMonitor reads an Azure resource group: what is in it, what state it is in, and what it has
-cost so far this month, and can start, stop or restart an App Service in it.
+cost so far this month, can start, stop or restart an App Service or a VM in it, and can create a
+Linux VM with the agent already installed.
 
 | It needs | Detail |
 |---|---|
 | A credential | Either an app registration with a client secret, or a managed identity on the machine running the hub. |
 | The **Reader** role | On each resource group, granted by a tenant administrator. Enough to read everything, cost included. |
-| The **Website Contributor** role | Only to *act*. Reader can see an App Service; it cannot start or stop one. Ask for both at once — a second round trip through a tenant administrator is a second wait. |
+| The **Website Contributor** role | Only to *act* on App Services. Reader can see one; it cannot start or stop it. |
+| The **Virtual Machine Contributor** role | Only to create, act on and delete VMs. Ask for all three roles at once — a second round trip through a tenant administrator is a second wait. |
+| A VNet with a subnet | **You create it, not the hub.** Virtual Machine Contributor cannot create a VNet, a public IP or an NSG; it can only join an existing subnet. Being Contributor on the resource group is enough to make one yourself, with no administrator involved. |
+| Outbound internet on that subnet | Azure retired implicit outbound access for new deployments on 2025‑09‑30, so a subnet created since then returns `defaultOutboundAccess: false` and a VM with no public IP cannot reach anything — including this hub. Set it back to `true` (still accepted, deprecated) or put a NAT Gateway on the subnet (~€32/month). |
 | At least one resource group | Reading a whole subscription would need a subscription-scope role assignment this hub does not ask for. |
 
 **Reader covers cost as well as inventory.** The Cost Management query is an HTTP POST, which looks
@@ -116,7 +120,9 @@ spirit, a resource Azure has not billed shows a dash, never `0.00`.
 
 ### Actions
 
-Start, stop and restart, on App Services. Two rules are worth knowing because they are deliberate:
+Start, stop and restart, on App Services and VMs. On a VM, **stop means deallocate**: powering it
+off while keeping it allocated would keep the bill running, which is the opposite of why anyone
+presses Stop. Two more rules are worth knowing because they are deliberate:
 
 - **The state shown afterwards is read back from Azure**, never inferred from the action you asked
   for. If Azure has not caught up, the table says `Running` after a stop, because that is what Azure
@@ -128,16 +134,37 @@ Start, stop and restart, on App Services. Two rules are worth knowing because th
 
 Every action is logged with its outcome and Azure's own error, under the table.
 
-⚠️ **No real subscription has ever been read or acted on by this code.** Every Azure endpoint in the
-test suite is a local fake. The error path *has* been checked against real Azure — a wrong tenant id
-returns `AADSTS900021`, and that message reaches the action log and the browser intact, trace id
-included — but the first successful sync, and the first resource that actually stops, will be
-yours.
+### Creating a virtual machine
+
+From the Azure page: a name, and the machine comes up with the agent installed and reporting.
+
+- **It gets no public IP, and does not need one.** The agent dials out, so a machine with no inbound
+  address is exactly as monitorable — and nobody can SSH to it from outside. The other side of that
+  bargain: **the hub needs an address the VM can reach.** `localhost` is refused at the form rather
+  than discovered twenty minutes later as a machine that booted and never called home.
+- **The hub never creates a network.** You paste the id of a subnet you made; the VM joins it.
+- **Nothing is ever rolled back.** A creation that fails halfway leaves a resource behind, and the
+  page names it, with the button that deletes it. The hub does not delete anything on its own —
+  including after its own failure, which is the least exercised path it has.
+- **Deleting is confirmed by typing the VM's name**, and only ever touches resources tagged
+  `createdBy=ServersMonitor`. A resource you created by hand cannot be reached by a mistyped id.
+
+⚠️ **No real subscription has ever been read, acted on or provisioned by this code.** Every Azure
+endpoint in the test suite is a local fake. The error path *has* been checked against real Azure — a
+wrong tenant id returns `AADSTS900021`, and that message reaches the action log and the browser
+intact, trace id included — but the first successful sync, the first resource that actually stops,
+and the first VM that actually boots will be yours. That last one is the whole point of lot 5, and
+it stays unproven.
 
 ## What this does not do yet
 
-- **No VM actions.** Start, stop and restart cover App Services only: the sandbox holds no virtual
-  machine yet. VMs arrive with provisioning in lot 5, and cost guardrails in lot 6.
+- **No published agent binary yet.** cloud-init installs the agent from the GitHub release, and
+  there is no release to download. Until one is published, a created VM comes up without an agent.
+- **The hub does not check the subnet can reach the internet.** It cannot: reading it is one
+  permission and fixing it is another, and both are outside the role it is given. If
+  `defaultOutboundAccess` is false and there is no NAT Gateway, the VM boots and the agent never
+  connects, with nothing on the hub's side to say why.
+- **No cost guardrails.** Schedules, orphan detection and budget alerts arrive in lot 6.
 - **No per-rule routing.** Every enabled channel receives every transition. Mute a host to silence it.
 - **One user.** A single local admin account; Entra ID is deferred.
 - **No TLS of its own.** Put a reverse proxy in front for anything but localhost.
@@ -150,7 +177,7 @@ yours.
 | 2 | Alert channels: SMTP, webhook / ntfy, Teams | **done** |
 | 3 | Azure read: inventory, state, costs vs budget | **done** |
 | 4 | Azure actions: start, stop, restart | **done** |
-| 5 | VM provisioning with the agent pre-installed | next |
+| 5 | VM provisioning with the agent pre-installed | **done** |
 | 6 | Cost guardrails: schedules, orphans, budget alerts | |
 
 ## Design notes
