@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -100,12 +101,26 @@ func (c *Client) GetAll(ctx context.Context, path string, query url.Values) ([]j
 	return out, nil
 }
 
+// Get reads one object. ARM answers a single resource with the object itself,
+// not with a {"value":[…]} page, and GetAll would unmarshal that without error
+// and return nothing at all — a silent empty, which is the one failure this
+// project refuses everywhere else.
+func (c *Client) Get(ctx context.Context, path string, query url.Values) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, c.url(path, query), nil)
+}
+
 func (c *Client) Post(ctx context.Context, path string, query url.Values, body any) ([]byte, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	return c.do(ctx, http.MethodPost, c.url(path, query), raw)
+}
+
+// PostAction sends an action. It shares the client with the read path but not
+// the retry policy: see retryThrottlingOnly.
+func (c *Client) PostAction(ctx context.Context, path string, query url.Values) ([]byte, error) {
+	return c.doWith(ctx, http.MethodPost, c.url(path, query), nil, retryThrottlingOnly)
 }
 
 func (c *Client) url(path string, query url.Values) string {
@@ -117,6 +132,14 @@ func (c *Client) url(path string, query url.Values) string {
 }
 
 func (c *Client) do(ctx context.Context, method, rawURL string, body []byte) ([]byte, error) {
+	return c.doWith(ctx, method, rawURL, body, Retryable)
+}
+
+// doWith takes the retry policy per call rather than per client. One
+// *Client is shared by the inventory sweep, the cost sweep and the actions
+// (see hub.go), so weakening its Options for one call would be a race against
+// a sweep already in flight.
+func (c *Client) doWith(ctx context.Context, method, rawURL string, body []byte, retry func(error) bool) ([]byte, error) {
 	var last error
 	for attempt := 1; attempt <= c.opt.Attempts; attempt++ {
 		out, wait, err := c.attempt(ctx, method, rawURL, body)
@@ -124,7 +147,7 @@ func (c *Client) do(ctx context.Context, method, rawURL string, body []byte) ([]
 			return out, nil
 		}
 		last = err
-		if !Retryable(err) || attempt == c.opt.Attempts {
+		if !retry(err) || attempt == c.opt.Attempts {
 			break
 		}
 		if wait <= 0 {
@@ -188,6 +211,29 @@ func retryAfter(h string) time.Duration {
 	return 0
 }
 
+// Error is an ARM failure that kept its status as a number. The text is
+// unchanged from what lot 3 produced; what is new is that a caller can branch
+// on Status without reading English back out of the message.
+type Error struct {
+	Status  int
+	Code    string // ARM's own code, e.g. "AuthorizationFailed"
+	Message string
+}
+
+func (e *Error) Error() string {
+	return fmt.Sprintf("%s: %s", http.StatusText(e.Status), truncate(e.Message, 400))
+}
+
+// StatusOf returns the HTTP status behind a failure, or 0 when there was no
+// answer at all. A refused connection is not a 500, and must not read as one.
+func StatusOf(err error) int {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Status
+	}
+	return 0
+}
+
 // armError unwraps ARM's {"error":{"code":…,"message":…}} envelope, which is
 // shaped differently from the token endpoint's flat one.
 func armError(status int, body []byte) error {
@@ -201,5 +247,5 @@ func armError(status int, body []byte) error {
 	if e.Error.Message == "" {
 		return azureError(status, body)
 	}
-	return fmt.Errorf("%s: %s", http.StatusText(status), truncate(e.Error.Message, 400))
+	return &Error{Status: status, Code: e.Error.Code, Message: e.Error.Message}
 }

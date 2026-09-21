@@ -9,13 +9,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vincentlauriat/serversmonitor/internal/hub/azure"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 )
 
 type fakeAzurer struct {
-	reloads int
-	tested  int
-	err     error
+	reloads   int
+	tested    int
+	err       error
+	started   int
+	actionID  int64
+	actionErr error
+}
+
+func (f *fakeAzurer) StartAction(resourceID string, action azure.Action) (int64, error) {
+	f.started++
+	if f.actionErr != nil {
+		return 0, f.actionErr
+	}
+	return f.actionID, nil
 }
 
 func (f *fakeAzurer) ReloadAzure() { f.reloads++ }
@@ -238,7 +250,7 @@ func TestSettingsNeverReturnTheSecret(t *testing.T) {
 	resp, _ := r.do(t, "PUT", "/api/v1/azure/settings", map[string]any{
 		"mode": "client_secret", "tenant_id": "t", "client_id": "c",
 		"client_secret": "sh-hunter22", "subscription_id": "s",
-		"resource_groups": []string{"rg-sandbox"},
+		"resource_groups":     []string{"rg-sandbox"},
 		"inventory_every_min": 15, "cost_every_min": 60,
 	})
 	if resp.StatusCode != 204 {
@@ -381,6 +393,7 @@ func TestAzureEndpointsNeedASession(t *testing.T) {
 	for _, c := range []struct{ method, path string }{
 		{"GET", "/api/v1/azure"}, {"GET", "/api/v1/azure/settings"},
 		{"PUT", "/api/v1/azure/settings"}, {"POST", "/api/v1/azure/test"},
+		{"POST", "/api/v1/azure/actions"}, {"GET", "/api/v1/azure/actions"},
 	} {
 		if resp, _ := r.do(t, c.method, c.path, map[string]any{}); resp.StatusCode != 401 {
 			t.Errorf("%s %s = %d, want 401", c.method, c.path, resp.StatusCode)
@@ -437,5 +450,109 @@ func TestUnreadableSyncStateIsAnErrorNotAnEmptyMap(t *testing.T) {
 	resp, data := r.do(t, "GET", "/api/v1/azure", nil)
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("GET = %d %s, want 500", resp.StatusCode, data)
+	}
+}
+
+// --- lot 4: actions ---
+
+func TestActionRequiresAuth(t *testing.T) {
+	r := newRig(t)
+	res, _ := r.do(t, "POST", "/api/v1/azure/actions", map[string]any{"resource_id": "/x", "action": "stop"})
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", res.StatusCode)
+	}
+	if az := r.azure.(*fakeAzurer); az.started != 0 {
+		t.Fatalf("the hub must not be asked to act: %d", az.started)
+	}
+}
+
+func TestUnknownActionIsRejected(t *testing.T) {
+	// The route does not forward a verb it has not vetted to ARM.
+	r := newRig(t)
+	r.setupAndLogin(t)
+	res, _ := r.do(t, "POST", "/api/v1/azure/actions", map[string]any{"resource_id": "/x", "action": "delete"})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.StatusCode)
+	}
+	if az := r.azure.(*fakeAzurer); az.started != 0 {
+		t.Fatalf("the hub must not be asked to act: %d", az.started)
+	}
+}
+
+func TestAcceptedReturnsTheActionID(t *testing.T) {
+	r := newRig(t)
+	r.setupAndLogin(t)
+	r.azure.(*fakeAzurer).actionID = 17
+	res, body := r.do(t, "POST", "/api/v1/azure/actions", map[string]any{"resource_id": "/X", "action": "stop"})
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, body %s", res.StatusCode, body)
+	}
+	var out struct {
+		ActionID int64 `json:"action_id"`
+	}
+	json.Unmarshal(body, &out)
+	if out.ActionID != 17 {
+		t.Fatalf("action_id = %d", out.ActionID)
+	}
+}
+
+func TestActionErrorsMapToStatuses(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"unknown resource", store.ErrNoSuchResource, http.StatusNotFound},
+		{"already running", store.ErrActionInFlight, http.StatusConflict},
+		{"azure off", azure.ErrNotConfigured, http.StatusBadRequest},
+		{"not actionable", azure.ErrNotActionable, http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			r.setupAndLogin(t)
+			r.azure.(*fakeAzurer).actionErr = tc.err
+			res, body := r.do(t, "POST", "/api/v1/azure/actions", map[string]any{"resource_id": "/x", "action": "stop"})
+			if res.StatusCode != tc.want {
+				t.Fatalf("status = %d, want %d (body %s)", res.StatusCode, tc.want, body)
+			}
+		})
+	}
+}
+
+func TestTheActionLogIsReadable(t *testing.T) {
+	r := newRig(t)
+	r.setupAndLogin(t)
+	now := time.Now().UTC()
+	if err := r.st.ReplaceAzureInventory([]string{"rg"}, []store.AzureResource{{
+		ID: "/x", ARMID: "/X", Name: "app", Type: "microsoft.web/sites",
+		ResourceGroup: "rg", Location: "westeurope", Tags: map[string]string{}}}, now); err != nil {
+		t.Fatal(err)
+	}
+	id, err := r.st.StartAzureAction(store.AzureAction{ResourceID: "/x", ResourceName: "app",
+		Action: "stop", RequestedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.st.FinishAzureAction(id, "failed", "Forbidden: no Website Contributor", nil, now); err != nil {
+		t.Fatal(err)
+	}
+
+	res, body := r.do(t, "GET", "/api/v1/azure/actions", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", res.StatusCode)
+	}
+	var out struct {
+		Actions []struct {
+			Status string `json:"status"`
+			Error  string `json:"error"`
+			Name   string `json:"resource_name"`
+		} `json:"actions"`
+	}
+	json.Unmarshal(body, &out)
+	if len(out.Actions) != 1 {
+		t.Fatalf("actions = %d", len(out.Actions))
+	}
+	if out.Actions[0].Status != "failed" || !strings.Contains(out.Actions[0].Error, "Website Contributor") {
+		t.Fatalf("the log must carry Azure's own words: %+v", out.Actions[0])
 	}
 }

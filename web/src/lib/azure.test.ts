@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { budgetShare, money, parseGroups, shortType, sortRows, toSettingsPayload } from './azure';
+import {
+  actionOutcome,
+  actionsFor,
+  budgetShare,
+  isInFlight,
+  money,
+  needsConfirmation,
+  parseGroups,
+  shortType,
+  sortRows,
+  toSettingsPayload,
+  type AzureAction
+} from './azure';
 import type { AzureRow, AzureSettings } from './api';
 
 const row = (over: Partial<AzureRow>): AzureRow => ({
@@ -109,5 +121,56 @@ describe('toSettingsPayload', () => {
   });
   it('carries the groups the textarea produced, not the stale ones', () => {
     expect(toSettingsPayload(s, ['rg-new'], null).resource_groups).toEqual(['rg-new']);
+  });
+});
+
+describe('actions', () => {
+  const act = (o: Partial<AzureAction>): AzureAction => ({
+    id: 1,
+    resource_id: '/x',
+    resource_name: 'app',
+    action: 'stop',
+    status: 'succeeded',
+    requested_at: '2026-09-18T10:00:00Z',
+    finished_at: null,
+    error: '',
+    state_before: null,
+    state_after: null,
+    ...o
+  });
+
+  it('offers no buttons for a type with no verbs', () => {
+    // Three buttons that all answer 400 are worse than none.
+    expect(actionsFor('Microsoft.Web/serverfarms')).toEqual([]);
+    expect(actionsFor('Microsoft.Web/sites')).toEqual(['start', 'stop', 'restart']);
+    expect(actionsFor('microsoft.web/sites')).toEqual(['start', 'stop', 'restart']);
+  });
+
+  it('knows which resource is busy, and only that one', () => {
+    const list = [act({ resource_id: '/a', status: 'running' }), act({ resource_id: '/b' })];
+    expect(isInFlight('/a', list)).toBe(true);
+    expect(isInFlight('/b', list)).toBe(false);
+    expect(isInFlight('/c', list)).toBe(false);
+  });
+
+  it('says plainly that an interrupted action was never replayed', () => {
+    expect(actionOutcome(act({ status: 'interrupted' }))).toMatch(/not replayed/);
+  });
+
+  it('does not claim a state it did not read back', () => {
+    expect(actionOutcome(act({ status: 'succeeded', state_after: null }))).toMatch(/not read back/);
+    expect(actionOutcome(act({ status: 'succeeded', state_after: 'Stopped' }))).toBe('now Stopped');
+  });
+
+  it('keeps Azure’s own message on a failure', () => {
+    expect(actionOutcome(act({ status: 'failed', error: 'Forbidden: no Website Contributor' }))).toMatch(
+      /Website Contributor/
+    );
+  });
+
+  it('confirms what takes a site offline, and nothing else', () => {
+    expect(needsConfirmation('stop')).toBe(true);
+    expect(needsConfirmation('restart')).toBe(true);
+    expect(needsConfirmation('start')).toBe(false);
   });
 });

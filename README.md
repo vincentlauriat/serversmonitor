@@ -94,12 +94,13 @@ delivered to a real Teams channel from this code. Office 365 connector URLs
 ## Azure
 
 ServersMonitor reads an Azure resource group: what is in it, what state it is in, and what it has
-cost so far this month. It changes nothing — starting and stopping resources is lot 4.
+cost so far this month, and can start, stop or restart an App Service in it.
 
 | It needs | Detail |
 |---|---|
 | A credential | Either an app registration with a client secret, or a managed identity on the machine running the hub. |
-| The **Reader** role | On each resource group, granted by a tenant administrator. |
+| The **Reader** role | On each resource group, granted by a tenant administrator. Enough to read everything, cost included. |
+| The **Website Contributor** role | Only to *act*. Reader can see an App Service; it cannot start or stop one. Ask for both at once — a second round trip through a tenant administrator is a second wait. |
 | At least one resource group | Reading a whole subscription would need a subscription-scope role assignment this hub does not ask for. |
 
 **Reader covers cost as well as inventory.** The Cost Management query is an HTTP POST, which looks
@@ -113,15 +114,30 @@ error rather than a generic failure — usually a role assignment that was never
 it: an agent that cannot reach Azure must not look like a sandbox with nothing in it. In the same
 spirit, a resource Azure has not billed shows a dash, never `0.00`.
 
-⚠️ **No real subscription has ever been read by this code.** Every Azure endpoint in the test suite
-is a local fake. The error path *has* been checked against real Azure — a wrong tenant id returns
-`AADSTS900021` and that message reaches the browser intact — but the first successful sync will be
+### Actions
+
+Start, stop and restart, on App Services. Two rules are worth knowing because they are deliberate:
+
+- **The state shown afterwards is read back from Azure**, never inferred from the action you asked
+  for. If Azure has not caught up, the table says `Running` after a stop, because that is what Azure
+  said. If the read fails, the previous state stands and nothing is invented.
+- **An action interrupted by the hub stopping is never replayed.** It is recorded as *interrupted*
+  and left there. Re-firing a stop at startup could stop a resource you restarted by hand in the
+  meantime — the opposite choice from a pending notification, which *is* replayed, because a lost
+  alert is worse than a duplicate one.
+
+Every action is logged with its outcome and Azure's own error, under the table.
+
+⚠️ **No real subscription has ever been read or acted on by this code.** Every Azure endpoint in the
+test suite is a local fake. The error path *has* been checked against real Azure — a wrong tenant id
+returns `AADSTS900021`, and that message reaches the action log and the browser intact, trace id
+included — but the first successful sync, and the first resource that actually stops, will be
 yours.
 
 ## What this does not do yet
 
-- **No Azure actions.** Start, stop and restart are lot 4; provisioning is lot 5; cost guardrails
-  are lot 6.
+- **No VM actions.** Start, stop and restart cover App Services only: the sandbox holds no virtual
+  machine yet. VMs arrive with provisioning in lot 5, and cost guardrails in lot 6.
 - **No per-rule routing.** Every enabled channel receives every transition. Mute a host to silence it.
 - **One user.** A single local admin account; Entra ID is deferred.
 - **No TLS of its own.** Put a reverse proxy in front for anything but localhost.
@@ -133,8 +149,8 @@ yours.
 | 1 | Hub, agent, web UI, alerts | **done** |
 | 2 | Alert channels: SMTP, webhook / ntfy, Teams | **done** |
 | 3 | Azure read: inventory, state, costs vs budget | **done** |
-| 4 | Azure actions: start, stop, restart | next |
-| 5 | VM provisioning with the agent pre-installed | |
+| 4 | Azure actions: start, stop, restart | **done** |
+| 5 | VM provisioning with the agent pre-installed | next |
 | 6 | Cost guardrails: schedules, orphans, budget alerts | |
 
 ## Design notes

@@ -160,3 +160,28 @@ func TestInventoryRefusesAnEmptyGroupList(t *testing.T) {
 		t.Fatalf("the reason must name resource groups: %v", err)
 	}
 }
+
+func TestInventoryKeepsArmsOwnCasing(t *testing.T) {
+	// The join key is lowercased so inventory and cost rows meet. The action
+	// URL, however, is built from ARM's own spelling — so it has to survive.
+	const armID = "/subscriptions/S/resourceGroups/RG/providers/Microsoft.Web/sites/App"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/resources") {
+			fmt.Fprintf(w, `{"value":[{"id":%q,"name":"App","type":"Microsoft.Web/sites","location":"westeurope"}]}`, armID)
+			return
+		}
+		fmt.Fprint(w, `{"value":[]}`)
+	}))
+	defer srv.Close()
+	c := NewClient(staticSource("tok"), Options{Base: srv.URL})
+	rs, err := Inventory(context.Background(), c, "s", []string{"RG"})
+	if err != nil || len(rs) != 1 {
+		t.Fatalf("inventory = %d, %v", len(rs), err)
+	}
+	if rs[0].ID != NormalizeID(armID) {
+		t.Fatalf("id = %q, want it lowercased", rs[0].ID)
+	}
+	if rs[0].ARMID != armID {
+		t.Fatalf("ARMID = %q, want %q", rs[0].ARMID, armID)
+	}
+}

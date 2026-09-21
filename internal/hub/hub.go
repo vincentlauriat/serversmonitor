@@ -41,6 +41,11 @@ type Hub struct {
 	// rather than at the next tick. Buffered and sent to without blocking: a
 	// reload must never wait on a loop that is not running yet.
 	akick chan struct{}
+	// runCtx is the hub's lifetime, published by Run so that work started from
+	// an HTTP request can outlive that request without outliving the hub.
+	runCtx atomic.Pointer[context.Context]
+	// readBack bounds the state read that follows an action. See runAction.
+	readBack time.Duration
 	// One guard per scope. An Azure sweep runs off the loop, so two of them can
 	// otherwise overlap — and two interleaved ReplaceAzureInventory
 	// transactions let one sweep's stale view mark the other's fresh rows
@@ -90,7 +95,7 @@ func New(cfg config.Config, version string, log *slog.Logger) (*Hub, error) {
 	icfg.IntervalSec = st.SettingInt("agent_interval_sec", 10)
 	agents := ingest.New(st, bus, icfg, log.With("component", "ingest"))
 	h := &Hub{cfg: cfg, log: log, st: st, bus: bus, agents: agents, machine: machine,
-		akick: make(chan struct{}, 1)}
+		akick: make(chan struct{}, 1), readBack: 30 * time.Second}
 	h.dispatch = notify.NewDispatcher(st, notify.Options{Log: log.With("component", "notify")})
 	h.ReloadNotify()
 	h.ReloadAzure()
@@ -107,10 +112,22 @@ func (h *Hub) interval() time.Duration {
 	return time.Duration(h.st.SettingInt("agent_interval_sec", 10)) * time.Second
 }
 
+// baseCtx is the hub's own lifetime, for work started from an HTTP request and
+// outliving it. Run is its only source; before Run there is nothing to cancel,
+// which only tests ever see.
+func (h *Hub) baseCtx() context.Context {
+	if c := h.runCtx.Load(); c != nil {
+		return *c
+	}
+	return context.Background()
+}
+
 // Run executes the periodic jobs until ctx is cancelled.
 func (h *Hub) Run(ctx context.Context) error {
+	h.runCtx.Store(&ctx)
 	h.dispatch.Start(ctx)
 	h.replayPendingDeliveries()
+	h.interruptActions()
 	azureInv := time.NewTicker(h.azureInterval("inventory"))
 	azureCost := time.NewTicker(h.azureInterval("cost"))
 	defer azureInv.Stop()
