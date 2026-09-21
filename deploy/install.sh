@@ -1,6 +1,10 @@
 #!/bin/sh
 # ServersMonitor agent installer. Usage:
 #   curl -fsSL https://<hub>/install.sh | sudo sh -s -- --hub wss://<hub> --token <token> [--url <binary base url>] [--insecure]
+#
+# --token-file <path> reads the token from a file instead. Prefer it when
+# something else writes the token: a token on a command line is visible in
+# `ps` and lands in cloud-init's world-readable output log.
 set -eu
 
 HUB=""; TOKEN=""; INSECURE=""
@@ -9,12 +13,13 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --hub) HUB="$2"; shift 2 ;;
     --token) TOKEN="$2"; shift 2 ;;
+    --token-file) TOKEN=$(cat "$2"); shift 2 ;;
     --url) BASE_URL="$2"; shift 2 ;;
     --insecure) INSECURE="1"; shift ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$HUB" ] && [ -n "$TOKEN" ] || { echo "usage: install.sh --hub <url> --token <token>" >&2; exit 2; }
+[ -n "$HUB" ] && [ -n "$TOKEN" ] || { echo "usage: install.sh --hub <url> (--token <token> | --token-file <path>)" >&2; exit 2; }
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
