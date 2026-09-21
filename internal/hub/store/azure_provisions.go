@@ -212,3 +212,13 @@ func nullInt(p *int64) any {
 	}
 	return *p
 }
+
+// SetAzureProvisionHost attaches the host row to a provision. The provision
+// row is written first, because its partial unique index is what refuses a
+// second run of the same name — checking first and inserting second is a race
+// two requests interleave through, and losing it would leave a host row for a
+// provision that never started.
+func (s *Store) SetAzureProvisionHost(provisionID, hostID int64) error {
+	_, err := s.db.Exec(`UPDATE azure_provisions SET host_id = ? WHERE id = ?`, hostID, provisionID)
+	return err
+}

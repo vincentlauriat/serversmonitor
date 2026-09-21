@@ -133,6 +133,7 @@ func (h *Hub) Run(ctx context.Context) error {
 	h.dispatch.Start(ctx)
 	h.replayPendingDeliveries()
 	h.interruptActions()
+	h.interruptProvisions()
 	azureInv := time.NewTicker(h.azureInterval("inventory"))
 	azureCost := time.NewTicker(h.azureInterval("cost"))
 	defer azureInv.Stop()

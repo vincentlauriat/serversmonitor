@@ -192,3 +192,27 @@ func parseImage(s string) (map[string]any, error) {
 	}
 	return map[string]any{"publisher": p[0], "offer": p[1], "sku": p[2], "version": p[3]}, nil
 }
+
+// ValidateVMName applies Azure's own rules for a Linux VM name, before a
+// request is built rather than after ARM refuses it: the refusal arrives as a
+// 400 whose message is about a "resource name", which reads like a bug in the
+// hub rather than a typo in a form.
+func ValidateVMName(name string) error {
+	const rule = "a VM name is 1 to 64 characters of letters, digits, hyphens, underscores or " +
+		"periods, and cannot end with a hyphen or a period"
+	if name == "" || len(name) > 64 {
+		return fmt.Errorf("%s, got %q", rule, name)
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.':
+		default:
+			return fmt.Errorf("%s, got %q", rule, name)
+		}
+	}
+	if strings.HasSuffix(name, "-") || strings.HasSuffix(name, ".") {
+		return fmt.Errorf("%s, got %q", rule, name)
+	}
+	return nil
+}
