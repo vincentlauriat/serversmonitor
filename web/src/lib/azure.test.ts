@@ -3,14 +3,20 @@ import {
   actionOutcome,
   actionsFor,
   budgetShare,
+  deleteConfirmed,
   isInFlight,
+  leftovers,
   money,
   needsConfirmation,
   parseGroups,
+  provisionBlockedReason,
+  provisionOutcome,
   shortType,
   sortRows,
   toSettingsPayload,
-  type AzureAction
+  type AzureAction,
+  type Provision,
+  type ProvisionResource
 } from './azure';
 import type { AzureRow, AzureSettings } from './api';
 
@@ -107,6 +113,12 @@ describe('toSettingsPayload', () => {
     resource_groups: [],
     inventory_every_min: 15,
     cost_every_min: 60,
+    provision_subnet_id: '',
+    provision_hub_url: '',
+    provision_size: '',
+    provision_image: '',
+    provision_admin_user: '',
+    provision_ssh_key: '',
     budget_monthly: 0
   };
   it('never sends back the read-only flag', () => {
@@ -172,5 +184,60 @@ describe('actions', () => {
     expect(needsConfirmation('stop')).toBe(true);
     expect(needsConfirmation('restart')).toBe(true);
     expect(needsConfirmation('start')).toBe(false);
+  });
+});
+
+describe('provisioning', () => {
+  const res = (o: Partial<ProvisionResource> = {}): ProvisionResource => ({
+    arm_id: '/subs/x/providers/Microsoft.Network/networkInterfaces/vm1-nic',
+    kind: 'nic',
+    created_at: '2026-09-21T10:00:00Z',
+    deleted_at: null,
+    ...o
+  });
+  const prov = (o: Partial<Provision> = {}): Provision => ({
+    id: 1,
+    name: 'vm1',
+    host_id: 7,
+    status: 'succeeded',
+    requested_at: '2026-09-21T10:00:00Z',
+    finished_at: '2026-09-21T10:03:00Z',
+    error: '',
+    delete_error: '',
+    resources: [res()],
+    ...o
+  });
+
+  it('says plainly that an interrupted run was never resumed', () => {
+    expect(provisionOutcome(prov({ status: 'interrupted' }))).toMatch(/not resumed/);
+  });
+
+  it('keeps Azure’s own reason on a failure', () => {
+    expect(provisionOutcome(prov({ status: 'failed', error: 'quota exceeded' }))).toMatch(/quota/);
+  });
+
+  it('counts as leftovers only what nobody has deleted', () => {
+    const p = prov({ resources: [res(), res({ arm_id: '/gone', deleted_at: '2026-09-21T11:00:00Z' })] });
+    expect(leftovers(p)).toHaveLength(1);
+    expect(leftovers(p)[0].arm_id).toMatch(/vm1-nic/);
+  });
+
+  it('requires the name typed back, and forgives only whitespace', () => {
+    expect(deleteConfirmed('vm1', 'vm1')).toBe(true);
+    expect(deleteConfirmed('  vm1 ', 'vm1')).toBe(true);
+    expect(deleteConfirmed('vm', 'vm1')).toBe(false);
+    expect(deleteConfirmed('VM1', 'vm1')).toBe(false);
+    // An empty record name must never be confirmable by an empty box.
+    expect(deleteConfirmed('', '')).toBe(false);
+  });
+
+  it('names why provisioning is unavailable rather than just greying out', () => {
+    expect(provisionBlockedReason('off', true)).toMatch(/Settings/);
+    expect(provisionBlockedReason('client_secret', false)).toMatch(/inventory/);
+    expect(provisionBlockedReason('client_secret', true)).toBe('');
+  });
+
+  it('offers the same three buttons for a VM as for a site', () => {
+    expect(actionsFor('Microsoft.Compute/virtualMachines')).toEqual(['start', 'stop', 'restart']);
   });
 });

@@ -200,6 +200,15 @@ type azureSettingsView struct {
 	InventoryEveryMin int      `json:"inventory_every_min"`
 	CostEveryMin      int      `json:"cost_every_min"`
 	BudgetMonthly     float64  `json:"budget_monthly"`
+	// Provisioning. Saved and read back with the rest, but never validated
+	// with it: a hub used only for lot 3's read-only inventory must still be
+	// able to save its credentials with all of these empty.
+	ProvisionSubnetID  string `json:"provision_subnet_id"`
+	ProvisionHubURL    string `json:"provision_hub_url"`
+	ProvisionSize      string `json:"provision_size"`
+	ProvisionImage     string `json:"provision_image"`
+	ProvisionAdminUser string `json:"provision_admin_user"`
+	ProvisionSSHKey    string `json:"provision_ssh_key"`
 }
 
 // azureSettingsInput mirrors it for writes. ClientSecret is a pointer so that
@@ -215,6 +224,13 @@ type azureSettingsInput struct {
 	InventoryEveryMin int      `json:"inventory_every_min"`
 	CostEveryMin      int      `json:"cost_every_min"`
 	BudgetMonthly     float64  `json:"budget_monthly"`
+
+	ProvisionSubnetID  string `json:"provision_subnet_id"`
+	ProvisionHubURL    string `json:"provision_hub_url"`
+	ProvisionSize      string `json:"provision_size"`
+	ProvisionImage     string `json:"provision_image"`
+	ProvisionAdminUser string `json:"provision_admin_user"`
+	ProvisionSSHKey    string `json:"provision_ssh_key"`
 }
 
 func (s *server) handleGetAzureSettings(w http.ResponseWriter, r *http.Request, _ store.User) {
@@ -222,12 +238,18 @@ func (s *server) handleGetAzureSettings(w http.ResponseWriter, r *http.Request, 
 	if c.ResourceGroups == nil {
 		c.ResourceGroups = []string{}
 	}
+	pc := azure.LoadProvisionConfig(s.Store)
 	writeJSON(w, http.StatusOK, azureSettingsView{
 		Mode: c.Mode, TenantID: c.TenantID, ClientID: c.ClientID,
 		ClientSecretSet: c.ClientSecret != "", MIClientID: c.MIClientID,
 		SubscriptionID: c.SubscriptionID, ResourceGroups: c.ResourceGroups,
 		InventoryEveryMin: c.InventoryEveryMin, CostEveryMin: c.CostEveryMin,
 		BudgetMonthly: c.BudgetMonthly,
+		// The SSH key is a public key, so unlike the client secret it goes
+		// back out: there is nothing to protect, and hiding it would make it
+		// impossible to check which key is in force.
+		ProvisionSubnetID: pc.SubnetID, ProvisionHubURL: pc.HubURL, ProvisionSize: pc.Size,
+		ProvisionImage: pc.Image, ProvisionAdminUser: pc.AdminUser, ProvisionSSHKey: pc.SSHKey,
 	})
 }
 
@@ -261,6 +283,16 @@ func (s *server) handlePutAzureSettings(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if err := azure.SaveConfig(s.Store, c); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// Deliberately not run through Ready(): provisioning is refused when it is
+	// asked for, not when the credentials are saved. Validating here would
+	// stop a read-only user from saving anything at all.
+	if err := azure.SaveProvisionConfig(s.Store, azure.ProvisionConfig{
+		SubnetID: in.ProvisionSubnetID, HubURL: in.ProvisionHubURL, Size: in.ProvisionSize,
+		Image: in.ProvisionImage, AdminUser: in.ProvisionAdminUser, SSHKey: in.ProvisionSSHKey,
+	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

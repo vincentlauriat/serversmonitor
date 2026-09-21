@@ -38,13 +38,23 @@ const (
 
 func LoadProvisionConfig(g Getter) ProvisionConfig {
 	return ProvisionConfig{
-		SubnetID:  strings.TrimSpace(str(g, "azure_provision_subnet_id", "")),
-		HubURL:    strings.TrimSpace(str(g, "azure_provision_hub_url", "")),
-		Size:      strings.TrimSpace(str(g, "azure_provision_size", defaultVMSize)),
-		Image:     strings.TrimSpace(str(g, "azure_provision_image", defaultVMImage)),
-		AdminUser: strings.TrimSpace(str(g, "azure_provision_admin_user", defaultAdminUser)),
+		SubnetID: strings.TrimSpace(str(g, "azure_provision_subnet_id", "")),
+		HubURL:   strings.TrimSpace(str(g, "azure_provision_hub_url", "")),
+		// These three fall back on an empty stored value too, not only on a
+		// missing key: a form that posts a blank size means "I did not choose
+		// one", and persisting "" would quietly turn the default off for good.
+		Size:      orDefault(str(g, "azure_provision_size", ""), defaultVMSize),
+		Image:     orDefault(str(g, "azure_provision_image", ""), defaultVMImage),
+		AdminUser: orDefault(str(g, "azure_provision_admin_user", ""), defaultAdminUser),
 		SSHKey:    strings.TrimSpace(str(g, "azure_provision_ssh_key", "")),
 	}
+}
+
+func orDefault(v, def string) string {
+	if v = strings.TrimSpace(v); v == "" {
+		return def
+	}
+	return v
 }
 
 func SaveProvisionConfig(s Setter, c ProvisionConfig) error {

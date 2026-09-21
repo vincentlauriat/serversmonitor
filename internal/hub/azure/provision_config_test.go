@@ -133,6 +133,24 @@ func TestDefaultsApplyAndSavedValuesWin(t *testing.T) {
 	}
 }
 
+func TestABlankSizeFallsBackToTheDefault(t *testing.T) {
+	// A form that posts an empty size means "I did not choose one". Storing
+	// "" and reading it back as "" would turn the default off for good, and
+	// the VM PUT would then ask Azure for a machine with no size.
+	s := settings{}
+	if err := SaveProvisionConfig(s, ProvisionConfig{SubnetID: goodSubnet}); err != nil {
+		t.Fatal(err)
+	}
+	c := LoadProvisionConfig(s)
+	if c.Size != defaultVMSize || c.Image != defaultVMImage || c.AdminUser != defaultAdminUser {
+		t.Fatalf("blanks were kept: %+v", c)
+	}
+	// The two with no sensible default stay empty, and Ready says so.
+	if c.HubURL != "" {
+		t.Fatalf("a hub address was invented: %q", c.HubURL)
+	}
+}
+
 func TestReadyAcceptsAWholeConfiguration(t *testing.T) {
 	if err := readyConfig().Ready(); err != nil {
 		t.Fatalf("Ready: %v", err)
