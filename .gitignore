@@ -21,3 +21,6 @@ bin/
 # local config
 .env
 .DS_Store
+
+# reliquats FUSE de fichiers SQLite ouverts puis supprimes
+.fuse_hidden*
