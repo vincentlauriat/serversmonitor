@@ -10,10 +10,14 @@ import (
 	"strings"
 )
 
-// webAPIVersion is the one lot 3's enrichment pass already uses. Actions and
-// the state read-back share it on purpose: they talk to the same provider, and
-// two versions drifting apart is a bug waiting for a Tuesday.
-const webAPIVersion = "2023-12-01"
+// The api-version each provider publishes. They are not interchangeable:
+// 2023-12-01 is a Microsoft.Web version and Microsoft.Compute does not publish
+// it at all, so a VM call sent with it is a 400 that no fake would catch.
+// Read back from the tenant on 2026-09-21 with `az provider show`.
+const (
+	webAPIVersion     = "2023-12-01"
+	computeAPIVersion = "2024-11-01"
+)
 
 // The two refusals a caller has to tell apart from a real Azure failure. They
 // live here because the hub raises them and the HTTP layer maps them, and the
@@ -31,48 +35,51 @@ const (
 	ActionRestart Action = "restart"
 )
 
-// Actionable maps a resource type to the ARM verb behind each action. A type
-// that is absent is not actionable, and the caller says so rather than guessing
-// a URL — an App Service Plan is not a site, and stopping one is not a thing.
-//
-// Lot 5 adds "microsoft.compute/virtualmachines" here, with "deallocate" for
-// stop. Those answer 202 and need the async-operation poll; nothing in this map
-// does today.
-var Actionable = map[string]map[Action]string{
+// provider is everything that differs between two resource types: how to
+// address them, what each action is called, and how to find a state in what
+// they answer. All three used to be package-level constants shaped for
+// Microsoft.Web, which worked only as long as Web was the only provider.
+type provider struct {
+	apiVersion string
+	// verbs maps an action to the ARM verb behind it. A type that is absent is
+	// not actionable, and the caller says so rather than guessing a URL — an
+	// App Service Plan is not a site, and stopping one is not a thing.
+	verbs map[Action]string
+	// statePath is what the state read-back addresses. A site reads itself; a
+	// VM's power state lives in a sub-resource.
+	statePath func(armID string) string
+	// readState finds the state in that answer, or returns nil when the answer
+	// does not carry one. nil is "nobody said", which is never "stopped".
+	readState func(body []byte) (*string, error)
+}
+
+var providers = map[string]provider{
 	"microsoft.web/sites": {
-		ActionStart:   "start",
-		ActionStop:    "stop",
-		ActionRestart: "restart",
+		apiVersion: webAPIVersion,
+		verbs: map[Action]string{
+			ActionStart:   "start",
+			ActionStop:    "stop",
+			ActionRestart: "restart",
+		},
+		statePath: func(armID string) string { return armID },
+		readState: readSiteState,
+	},
+	"microsoft.compute/virtualmachines": {
+		apiVersion: computeAPIVersion,
+		verbs: map[Action]string{
+			ActionStart: "start",
+			// Not "stop". "powerOff" keeps the machine allocated and billed;
+			// somebody who pressed Stop to save money would keep paying.
+			ActionStop:    "deallocate",
+			ActionRestart: "restart",
+		},
+		statePath: func(armID string) string { return armID + "/instanceView" },
+		readState: readVMPowerState,
 	},
 }
 
-func Supports(resourceType string, a Action) bool {
-	_, ok := Actionable[strings.ToLower(resourceType)][a]
-	return ok
-}
-
-// Do performs one action. armID keeps ARM's own casing: it is what the request
-// path is built from.
-func Do(ctx context.Context, c *Client, armID, resourceType string, a Action) error {
-	verb, ok := Actionable[strings.ToLower(resourceType)][a]
-	if !ok {
-		return fmt.Errorf("%w: %s cannot be asked to %s", ErrNotActionable, resourceType, a)
-	}
-	_, err := c.PostAction(ctx, armID+"/"+verb, url.Values{"api-version": {webAPIVersion}})
-	return err
-}
-
-// ReadState asks Azure what the resource's state is now. It returns nil when
-// Azure does not say — not knowing is not "Stopped" — and an error when the
-// read itself failed, which the caller must not confuse with the former.
-func ReadState(ctx context.Context, c *Client, armID, resourceType string) (*string, error) {
-	if _, ok := Actionable[strings.ToLower(resourceType)]; !ok {
-		return nil, fmt.Errorf("azure: no state to read for %s", resourceType)
-	}
-	body, err := c.Get(ctx, armID, url.Values{"api-version": {webAPIVersion}})
-	if err != nil {
-		return nil, err
-	}
+// readSiteState reads properties.state, which is how Microsoft.Web answers.
+func readSiteState(body []byte) (*string, error) {
 	var r struct {
 		Properties struct {
 			State string `json:"state"`
@@ -86,6 +93,79 @@ func ReadState(ctx context.Context, c *Client, armID, resourceType string) (*str
 	}
 	s := r.Properties.State
 	return &s, nil
+}
+
+// readVMPowerState reads the instance view's statuses, keeping only the
+// PowerState line. The ProvisioningState line sits right next to it and says
+// nothing about whether the machine is on; borrowing it would be exactly the
+// kind of plausible guess this project refuses.
+//
+// The code suffix is returned as Azure spells it ("running", "deallocated").
+// Capitalising it here would be this package inventing presentation.
+func readVMPowerState(body []byte) (*string, error) {
+	var r struct {
+		Statuses []struct {
+			Code string `json:"code"`
+		} `json:"statuses"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("azure: instance view is not an object: %w", err)
+	}
+	const prefix = "PowerState/"
+	for _, st := range r.Statuses {
+		if strings.HasPrefix(st.Code, prefix) {
+			s := strings.TrimPrefix(st.Code, prefix)
+			if s == "" {
+				return nil, nil
+			}
+			return &s, nil
+		}
+	}
+	return nil, nil
+}
+
+func providerFor(resourceType string) (provider, bool) {
+	p, ok := providers[strings.ToLower(resourceType)]
+	return p, ok
+}
+
+func Supports(resourceType string, a Action) bool {
+	p, ok := providerFor(resourceType)
+	if !ok {
+		return false
+	}
+	_, ok = p.verbs[a]
+	return ok
+}
+
+// Do performs one action. armID keeps ARM's own casing: it is what the request
+// path is built from.
+func Do(ctx context.Context, c *Client, armID, resourceType string, a Action) error {
+	p, ok := providerFor(resourceType)
+	if !ok {
+		return fmt.Errorf("%w: %s cannot be asked to %s", ErrNotActionable, resourceType, a)
+	}
+	verb, ok := p.verbs[a]
+	if !ok {
+		return fmt.Errorf("%w: %s cannot be asked to %s", ErrNotActionable, resourceType, a)
+	}
+	_, err := c.PostAction(ctx, armID+"/"+verb, url.Values{"api-version": {p.apiVersion}})
+	return err
+}
+
+// ReadState asks Azure what the resource's state is now. It returns nil when
+// Azure does not say — not knowing is not "Stopped" — and an error when the
+// read itself failed, which the caller must not confuse with the former.
+func ReadState(ctx context.Context, c *Client, armID, resourceType string) (*string, error) {
+	p, ok := providerFor(resourceType)
+	if !ok {
+		return nil, fmt.Errorf("azure: no state to read for %s", resourceType)
+	}
+	body, err := c.Get(ctx, p.statePath(armID), url.Values{"api-version": {p.apiVersion}})
+	if err != nil {
+		return nil, err
+	}
+	return p.readState(body)
 }
 
 // retryThrottlingOnly is the action retry policy, and it is deliberately
