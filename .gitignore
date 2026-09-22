@@ -24,3 +24,6 @@ bin/
 
 # reliquats FUSE de fichiers SQLite ouverts puis supprimes
 .fuse_hidden*
+
+# Aperant data directory
+.auto-claude/

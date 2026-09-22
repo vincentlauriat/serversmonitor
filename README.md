@@ -42,7 +42,8 @@ it had resolves itself at the worst possible moment.
 
 ## Quick start
 
-There is no Docker Hub image or GitHub release yet, so build it from this repository:
+There is no Docker Hub image yet, so build the hub from this repository (the agent binaries are on the
+[releases page](https://github.com/vincentlauriat/serversmonitor/releases)):
 
 ```
 docker build -f deploy/Dockerfile -t serversmonitor/hub .
@@ -50,8 +51,8 @@ docker run -d --name smhub -p 8090:8090 -v smhub-data:/data serversmonitor/hub
 ```
 
 Open <http://localhost:8090>, create the admin account, add a host, and run the command it gives you
-on the machine you want to watch. See [docs/getting-started.md](docs/getting-started.md), which also
-covers installing the agent while there is no release to download it from.
+on the machine you want to watch: it downloads the agent from the latest GitHub release. See
+[docs/getting-started.md](docs/getting-started.md).
 
 ## Build from source
 
@@ -60,7 +61,7 @@ Go 1.26 and Node 24 (Node only to build the front).
 ```
 make web build    # bin/smhub and bin/smagent, front embedded
 make test         # go test ./...
-make release      # linux/amd64, linux/arm64, darwin/arm64 in release/
+make release      # linux/amd64, linux/arm64, darwin/amd64, darwin/arm64 in release/
 ```
 
 ## Notifications
@@ -158,8 +159,6 @@ it stays unproven.
 
 ## What this does not do yet
 
-- **No published agent binary yet.** cloud-init installs the agent from the GitHub release, and
-  there is no release to download. Until one is published, a created VM comes up without an agent.
 - **The hub does not check the subnet can reach the internet.** It cannot: reading it is one
   permission and fixing it is another, and both are outside the role it is given. If
   `defaultOutboundAccess` is false and there is no NAT Gateway, the VM boots and the agent never

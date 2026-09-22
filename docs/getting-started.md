@@ -1,8 +1,9 @@
 # Getting started
 
-> **Nothing is published yet.** There is no `serversmonitor/hub` image on Docker Hub and no binary
-> on a GitHub releases page. Build both locally as shown below. Every command on this page that
-> names a published artefact is marked.
+> **The hub image is not published.** There is no `serversmonitor/hub` image on Docker Hub; build it
+> locally as shown below. The agent binaries are on the
+> [GitHub releases page](https://github.com/vincentlauriat/serversmonitor/releases), and that is
+> where `install.sh` downloads them from.
 
 ## 1. Run the hub
 
@@ -35,10 +36,9 @@ Settings → Hosts → **Add host**. Copy the command shown once, run it on the 
 curl -fsSL https://hub.example/install.sh | sudo sh -s -- --hub wss://hub.example --token <token>
 ```
 
-**Until a release is published, that script cannot download the binary.** It defaults to a GitHub
-releases URL that does not exist yet, so give it one that does — either point `--url` at a directory
-where you put the output of `make release`, or copy the binary over yourself and write the service
-file by hand:
+The script downloads `smagent-<os>-<arch>` from the latest GitHub release. To install a build of your
+own instead, point `--url` at a directory holding the output of `make release`, or copy the binary
+over yourself:
 
 ```
 # on the target machine, with smagent-linux-arm64 already copied to /usr/local/bin/smagent
