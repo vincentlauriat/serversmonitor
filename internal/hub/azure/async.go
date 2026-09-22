@@ -43,15 +43,26 @@ func (e *OperationError) Error() string {
 	}
 }
 
-// Await follows a 202 to its terminal state.
+// Await follows an accepted request to its terminal state.
 //
 // It returns nil when the operation succeeded — including when there was
-// nothing to follow, because a 2xx that is not 202 already finished. It
-// returns an *OperationError when Azure ran the operation and reported a
-// failure, and the context's error when the caller's budget ran out, which is
-// not a failure of the operation and must never be recorded as one.
+// nothing to follow. It returns an *OperationError when Azure ran the
+// operation and reported a failure, and the context's error when the
+// caller's budget ran out, which is not a failure of the operation and must
+// never be recorded as one.
+//
+// "Nothing to follow" is narrower than "not a 202". Compute answers a VM PUT
+// with 201 Created while the machine is still being built, and says so with
+// an Azure-AsyncOperation header; the first real VM was recorded as
+// succeeded two seconds after the request because that 201 was taken as
+// finished. Any 2xx that carries the header is followed. Only a 202 falls
+// back to Location: on a 201 that header, when present, names the resource,
+// not an operation.
 func Await(ctx context.Context, c *Client, r Response) error {
 	if r.Status != http.StatusAccepted {
+		if u := r.Header.Get("Azure-AsyncOperation"); u != "" && r.Status >= 200 && r.Status < 300 {
+			return poll(ctx, c, u, r.Header.Get("Retry-After"), operationStatus)
+		}
 		return nil
 	}
 	// Azure sends both headers on a create. Only Azure-AsyncOperation carries

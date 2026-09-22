@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- `install.sh` no longer writes `SupplementaryGroups=docker` into the agent's systemd unit. On a
+  machine without Docker the group does not exist and systemd refuses to start the service
+  (`status=216/GROUP`), which is why the first VM the hub created never connected. The agent runs
+  as root and needs no group to read the Docker socket.
+- A VM `PUT` answered with `201 Created` and an `Azure-AsyncOperation` header is now followed to
+  its end; it was recorded as succeeded two seconds after the request, while Azure was still
+  building the machine.
+
 ### Changed
 - Default VM size for provisioning is `Standard_B2ats_v2` instead of `Standard_B1s`: the first
   real provisioning attempt failed with `SkuNotAvailable`, and no B-series v1 size is offered to

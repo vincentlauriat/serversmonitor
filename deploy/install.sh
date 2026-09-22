@@ -52,7 +52,6 @@ ExecStart=$BIN
 Restart=always
 RestartSec=5
 User=root
-SupplementaryGroups=docker
 
 [Install]
 WantedBy=multi-user.target
