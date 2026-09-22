@@ -31,8 +31,15 @@ type ProvisionConfig struct {
 	SSHKey    string // one authorized_keys line
 }
 
+// defaultVMSize is the cheapest burstable size the sandbox's subscription can
+// actually get. Standard_B1s was the first choice (7.52 EUR/month against
+// 12.56), and it is not offered to this subscription in West Europe at all:
+// `az vm list-skus` does not list any B-series v1 size there, and the first
+// real provisioning attempt on 2026-09-22 failed with "Capacity Restrictions:
+// Standard_B1s". A default that fails on the first try is worse than a
+// slightly dearer one that works; the size stays editable in the settings.
 const (
-	defaultVMSize    = "Standard_B1s"
+	defaultVMSize    = "Standard_B2ats_v2"
 	defaultVMImage   = "Canonical:ubuntu-24_04-lts:server:latest"
 	defaultAdminUser = "azureuser"
 )

@@ -135,4 +135,6 @@ Retail prices for West Europe in EUR, read from the Azure pricing API on 2026-09
 | Data disk, 32 GB StandardSSD | 2.06 |
 | **Total** | **≈ 20.50** |
 
-`Standard_B1s` would have been 7.52 and is the obvious choice when capacity allows it.
+`Standard_B1s` would have been 7.52, but this subscription cannot get it in West Europe (no
+B-series v1 size is listed by `az vm list-skus -l westeurope`), which is also why the hub's
+default VM size for provisioning is `Standard_B2ats_v2`.

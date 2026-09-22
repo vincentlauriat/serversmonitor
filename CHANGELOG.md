@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- Default VM size for provisioning is `Standard_B2ats_v2` instead of `Standard_B1s`: the first
+  real provisioning attempt failed with `SkuNotAvailable`, and no B-series v1 size is offered to
+  the sandbox's subscription in West Europe.
+
 ## [0.5.0] — 2026-09-22
 
 First tagged release. Lots 1 to 5 are in; lot 6 (cost guardrails) is not.

@@ -112,7 +112,7 @@ func TestParseSubnetIDKeepsARMsCasing(t *testing.T) {
 func TestDefaultsApplyAndSavedValuesWin(t *testing.T) {
 	s := settings{}
 	c := LoadProvisionConfig(s)
-	if c.Size != "Standard_B1s" {
+	if c.Size != "Standard_B2ats_v2" {
 		t.Fatalf("size = %q, want the default", c.Size)
 	}
 	if !strings.Contains(c.Image, "ubuntu") || c.AdminUser != "azureuser" {
