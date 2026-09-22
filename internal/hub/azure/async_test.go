@@ -219,3 +219,54 @@ func TestAShutdownMidPollIsNotAnOperationFailure(t *testing.T) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }
+
+// created builds what Compute answers to a VM PUT: 201 Created, the
+// provisioning still running, and an Azure-AsyncOperation header to follow.
+func created(url string) Response {
+	h := http.Header{}
+	h.Set("Azure-AsyncOperation", url)
+	return Response{Status: http.StatusCreated, Header: h}
+}
+
+// The first real VM (2026-09-22) was recorded "succeeded" two seconds after
+// the request, while Azure was still building it. Compute answers a VM PUT
+// with 201 rather than 202, and Await took every non-202 as already finished.
+// A 201 that carries an Azure-AsyncOperation header is not finished: the
+// header is Azure saying so.
+func TestA201WithAnAsyncOperationIsFollowed(t *testing.T) {
+	var polls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if n := polls.Add(1); n <= 2 {
+			fmt.Fprint(w, `{"status":"InProgress"}`)
+			return
+		}
+		fmt.Fprint(w, `{"status":"Succeeded"}`)
+	}))
+	defer srv.Close()
+
+	var mu sync.Mutex
+	var slept []time.Duration
+	c := NewClient(staticSource("tok"), Options{Base: srv.URL, Sleep: noSleep(&slept, &mu)})
+	if err := Await(context.Background(), c, created(srv.URL+"/op/1")); err != nil {
+		t.Fatalf("Await: %v", err)
+	}
+	if polls.Load() != 3 {
+		t.Fatalf("polls = %d, want 3: a 201 with an operation to follow must be followed", polls.Load())
+	}
+}
+
+func TestA201WhoseOperationFailsIsAFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"Failed","error":{"code":"AllocationFailed","message":"no capacity"}}`)
+	}))
+	defer srv.Close()
+
+	c := NewClient(staticSource("tok"), Options{Base: srv.URL})
+	err := Await(context.Background(), c, created(srv.URL+"/op/1"))
+	if err == nil {
+		t.Fatal("a 201 whose operation failed must not read as success")
+	}
+	if !strings.Contains(err.Error(), "AllocationFailed") {
+		t.Fatalf("the error must carry Azure's code: %v", err)
+	}
+}
