@@ -582,7 +582,7 @@
               loopback address here is refused rather than discovered twenty minutes later.
             </span>
           </label>
-          <label class="block">VM size<input class={inp} bind:value={az.provision_size} placeholder="Standard_B1s" /></label>
+          <label class="block">VM size<input class={inp} bind:value={az.provision_size} placeholder="Standard_B2ats_v2" /></label>
           <label class="block">Administrator user<input class={inp} bind:value={az.provision_admin_user} placeholder="azureuser" /></label>
           <label class="block sm:col-span-2">
             Image

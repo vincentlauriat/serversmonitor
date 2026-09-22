@@ -141,7 +141,7 @@ existed. The page offers it as a separate, explicit action.
 
 ## 7. Settings, API and page
 
-New settings: subnet id, VM size (default `Standard_B1s`), image (default Ubuntu 24.04 LTS), admin
+New settings: subnet id, VM size (default `Standard_B2ats_v2` — was `Standard_B1s` until 2026-09-22, when the first real attempt failed on a capacity restriction: B-series v1 is not offered to this subscription in West Europe), image (default Ubuntu 24.04 LTS), admin
 username, SSH public key, and **the hub address the agent should dial**. Provisioning is refused,
 with a message naming what is missing, when the subnet or the hub address is empty.
 
