@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vincentlauriat/serversmonitor/internal/hub/azure"
+	"github.com/vincentlauriat/serversmonitor/internal/hub/guardrails"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/notify"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 )
@@ -159,5 +161,183 @@ func TestGuardrailTransitionsAreDelivered(t *testing.T) {
 		if d.GuardrailEventID == nil {
 			t.Fatalf("delivery %d has no guardrail event", d.ID)
 		}
+	}
+}
+
+func scheduleOn(t *testing.T, h *Hub, id string) {
+	t.Helper()
+	if err := h.st.UpsertAzureSchedule(store.AzureSchedule{ResourceID: id, OffWindows: guardrails.EncodeWindows(guardrails.EveningsAndWeekends), Enabled: true}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestABoundaryIssuesExactlyOneScheduledAction(t *testing.T) {
+	f := newAzureFake(t, "site1")
+	h := azureHub(t, f)
+	_ = h.st.SetSetting("azure_timezone", "UTC")
+	h.ReloadAzure()
+	h.syncAzureInventory(context.Background())
+	scheduleOn(t, h, f.id("site1"))
+
+	wed2030 := time.Date(2026, 9, 23, 20, 30, 0, 0, time.UTC)
+	h.applySchedules(wed2030)
+	f.waitActions(t, 1)
+	as, _ := h.st.ListAzureActions(5)
+	if len(as) != 1 || as[0].Action != "stop" || as[0].Origin != "schedule" {
+		t.Fatalf("actions = %+v", as)
+	}
+	// Ten minutes later: same boundary, nothing new.
+	h.applySchedules(wed2030.Add(10 * time.Minute))
+	time.Sleep(50 * time.Millisecond)
+	if as, _ := h.st.ListAzureActions(5); len(as) != 1 {
+		t.Fatalf("replayed: %+v", as)
+	}
+	// Next morning: the end boundary → start.
+	h.applySchedules(time.Date(2026, 9, 24, 7, 1, 0, 0, time.UTC))
+	f.waitActions(t, 2)
+	as, _ = h.st.ListAzureActions(5)
+	if as[0].Action != "start" {
+		t.Fatalf("morning action = %+v", as[0])
+	}
+}
+
+func TestCatchUpIsBoundedToTwelveHours(t *testing.T) {
+	// With evenings-and-weekends in UTC, the Friday 20:00 window merges with
+	// the Saturday and Sunday all-day windows into one off interval running to
+	// Monday 00:00. So the last boundary anywhere in the weekend is
+	// Friday 2026-09-25 20:00 UTC, and this pair also exercises the merge.
+	for _, tc := range []struct {
+		name    string
+		wake    time.Time
+		applied bool
+	}{
+		{"11h59 after the boundary", time.Date(2026, 9, 26, 7, 59, 0, 0, time.UTC), true},
+		{"12h01 after the boundary", time.Date(2026, 9, 26, 8, 1, 0, 0, time.UTC), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAzureFake(t, "site1")
+			h := azureHub(t, f)
+			_ = h.st.SetSetting("azure_timezone", "UTC")
+			h.ReloadAzure()
+			h.syncAzureInventory(context.Background())
+			scheduleOn(t, h, f.id("site1"))
+
+			h.catchUpSchedules(tc.wake)
+			if tc.applied {
+				f.waitActions(t, 1)
+				as, _ := h.st.ListAzureActions(5)
+				if len(as) != 1 || as[0].Action != "stop" || as[0].Origin != "schedule" {
+					t.Fatalf("expected one scheduled stop, got %+v", as)
+				}
+			} else {
+				time.Sleep(100 * time.Millisecond)
+				if as, _ := h.st.ListAzureActions(5); len(as) != 0 {
+					t.Fatalf("a boundary older than twelve hours must not be applied: %+v", as)
+				}
+			}
+			// Either way the boundary is marked, so the next tick does not
+			// reconsider it.
+			scs, _ := h.st.ListAzureSchedules()
+			if scs[0].LastBoundary == nil || !scs[0].LastBoundary.Equal(time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC)) {
+				t.Fatalf("boundary not marked: %+v", scs[0].LastBoundary)
+			}
+		})
+	}
+}
+
+// TestABoundaryThatProducesNoActionRowStillFires covers runSchedules' own
+// call to journalScheduleFailure (no action row is ever created, so
+// finishAction never runs) and, separately, journalScheduleFailure's own
+// "already firing" guard. Those are two different properties: calling
+// applySchedules again for the *same* boundary is refused by runSchedules'
+// boundary dedup before journalScheduleFailure is even reached (last_boundary
+// already advanced) — that alone would not prove the guard inside
+// journalScheduleFailure does anything. So this test also crosses to the next
+// boundary, where runSchedules does call through again with the resource
+// still missing, and only the guard inside journalScheduleFailure keeps that
+// from journalling a second "fired" event.
+func TestABoundaryThatProducesNoActionRowStillFires(t *testing.T) {
+	f := newAzureFake(t, "site1")
+	h := azureHub(t, f)
+	_ = h.st.SetSetting("azure_timezone", "UTC")
+	h.ReloadAzure()
+	h.syncAzureInventory(context.Background())
+	// A schedule on a resource the inventory does not have: StartActionFrom
+	// refuses before writing any row, so finishAction never runs.
+	if err := h.st.UpsertAzureSchedule(store.AzureSchedule{ResourceID: "/s/gone", OffWindows: guardrails.EncodeWindows(guardrails.EveningsAndWeekends), Enabled: true}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	h.applySchedules(time.Date(2026, 9, 23, 20, 30, 0, 0, time.UTC))
+	waitFor(t, func() bool {
+		last, _ := h.st.LastGuardrailEventPerKey()
+		return last[store.GuardrailKey{Subject: "/s/gone", Rule: "schedule_failed"}].Kind == "fired"
+	}, "schedule_failed did not fire")
+	// Same boundary, a minute later: runSchedules' own dedup refuses it
+	// before journalScheduleFailure is reached at all.
+	h.applySchedules(time.Date(2026, 9, 23, 20, 31, 0, 0, time.UTC))
+	time.Sleep(100 * time.Millisecond)
+	// The next morning's end boundary is a *different* boundary: runSchedules
+	// calls through to journalScheduleFailure again, with the resource still
+	// missing. Only the guard inside journalScheduleFailure itself can now
+	// keep this from journalling a second "fired" event.
+	h.applySchedules(time.Date(2026, 9, 24, 7, 1, 0, 0, time.UTC))
+	time.Sleep(100 * time.Millisecond)
+	n := 0
+	evs, _ := h.st.ListGuardrailEvents(20)
+	for _, e := range evs {
+		if e.Rule == "schedule_failed" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("schedule_failed journaled %d times", n)
+	}
+}
+
+func TestAFailedScheduledActionFiresScheduleFailed(t *testing.T) {
+	f := newAzureFake(t, "site1")
+	f.actionStatus = 500
+	h := azureHub(t, f)
+	_ = h.st.SetSetting("azure_timezone", "UTC")
+	h.ReloadAzure()
+	h.syncAzureInventory(context.Background())
+	scheduleOn(t, h, f.id("site1"))
+	h.applySchedules(time.Date(2026, 9, 23, 20, 30, 0, 0, time.UTC))
+	waitFor(t, func() bool {
+		last, _ := h.st.LastGuardrailEventPerKey()
+		return last[store.GuardrailKey{Subject: f.id("site1"), Rule: "schedule_failed"}].Kind == "fired"
+	}, "schedule_failed did not fire")
+	// The next boundary succeeds and resolves it.
+	f.actionStatus = 0
+	h.applySchedules(time.Date(2026, 9, 24, 7, 1, 0, 0, time.UTC))
+	waitFor(t, func() bool {
+		last, _ := h.st.LastGuardrailEventPerKey()
+		return last[store.GuardrailKey{Subject: f.id("site1"), Rule: "schedule_failed"}].Kind == "resolved"
+	}, "schedule_failed did not resolve")
+}
+
+func TestAManualActionInFlightSkipsTheBoundary(t *testing.T) {
+	f := newAzureFake(t, "site1")
+	f.holdAction = make(chan struct{})
+	h := azureHub(t, f)
+	_ = h.st.SetSetting("azure_timezone", "UTC")
+	h.ReloadAzure()
+	h.syncAzureInventory(context.Background())
+	scheduleOn(t, h, f.id("site1"))
+	if _, err := h.StartAction(f.id("site1"), azure.ActionRestart); err != nil {
+		t.Fatal(err)
+	}
+	h.applySchedules(time.Date(2026, 9, 23, 20, 30, 0, 0, time.UTC))
+	close(f.holdAction)
+	f.waitActions(t, 1)
+	time.Sleep(50 * time.Millisecond)
+	if as, _ := h.st.ListAzureActions(5); len(as) != 1 || as[0].Origin != "user" {
+		t.Fatalf("the boundary must be skipped, not queued: %+v", as)
+	}
+	// And it is not retried on the next tick either: last_boundary advanced.
+	h.applySchedules(time.Date(2026, 9, 23, 20, 31, 0, 0, time.UTC))
+	time.Sleep(50 * time.Millisecond)
+	if as, _ := h.st.ListAzureActions(5); len(as) != 1 {
+		t.Fatalf("retried: %+v", as)
 	}
 }

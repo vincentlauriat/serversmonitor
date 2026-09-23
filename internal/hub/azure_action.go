@@ -20,6 +20,13 @@ var (
 // HTTP request held open that long dies in a proxy and leaves the browser
 // believing a success failed.
 func (h *Hub) StartAction(resourceID string, a azure.Action) (int64, error) {
+	return h.StartActionFrom(resourceID, a, "user")
+}
+
+// StartActionFrom is StartAction with an origin. Schedules pass "schedule";
+// the row says so, and the failure of a scheduled action becomes a guardrail
+// event rather than a line only the action log knows.
+func (h *Hub) StartActionFrom(resourceID string, a azure.Action, origin string) (int64, error) {
 	_, client, ok := h.azureReady()
 	if !ok {
 		return 0, ErrAzureOff
@@ -39,18 +46,18 @@ func (h *Hub) StartAction(resourceID string, a azure.Action) (int64, error) {
 
 	actionID, err := h.st.StartAzureAction(store.AzureAction{
 		ResourceID: id, ResourceName: r.Name, Action: string(a),
-		RequestedAt: time.Now().UTC(), StateBefore: r.State,
+		RequestedAt: time.Now().UTC(), StateBefore: r.State, Origin: origin,
 	})
 	if err != nil {
 		return 0, err
 	}
-	go h.runAction(actionID, r, a, client)
+	go h.runAction(actionID, r, a, client, origin)
 	return actionID, nil
 }
 
 // runAction performs the call and records what Azure answered. Its context is
 // the hub's, not the request's: the request is already over.
-func (h *Hub) runAction(actionID int64, r store.AzureResource, a azure.Action, client *azure.Client) {
+func (h *Hub) runAction(actionID int64, r store.AzureResource, a azure.Action, client *azure.Client, origin string) {
 	ctx, cancel := context.WithTimeout(h.baseCtx(), 10*time.Minute)
 	defer cancel()
 
@@ -65,7 +72,7 @@ func (h *Hub) runAction(actionID int64, r store.AzureResource, a azure.Action, c
 
 	if err := azure.Do(ctx, client, armID, r.Type, a); err != nil {
 		h.log.Warn("azure action failed", "resource", r.Name, "action", a, "err", err)
-		h.finishAction(actionID, "failed", err.Error(), nil)
+		h.finishAction(actionID, "failed", err.Error(), nil, r, origin)
 		return
 	}
 
@@ -81,7 +88,7 @@ func (h *Hub) runAction(actionID int64, r store.AzureResource, a azure.Action, c
 	state, err := azure.ReadState(rctx, client, armID, r.Type)
 	if err != nil {
 		h.log.Warn("azure action: state read-back failed", "resource", r.Name, "err", err)
-		h.finishAction(actionID, "succeeded", "", nil)
+		h.finishAction(actionID, "succeeded", "", nil, r, origin)
 		return
 	}
 	if state != nil {
@@ -89,16 +96,29 @@ func (h *Hub) runAction(actionID int64, r store.AzureResource, a azure.Action, c
 			h.log.Error("azure action: store state", "err", err)
 		}
 	}
-	h.finishAction(actionID, "succeeded", "", state)
+	h.finishAction(actionID, "succeeded", "", state, r, origin)
 }
 
 // finishAction closes the row and publishes the outcome — success and failure
 // alike. A failure nobody published was one of lot 3's defects.
-func (h *Hub) finishAction(actionID int64, status, errMsg string, state *string) {
+//
+// For a scheduled action (origin == "schedule") it also fires or resolves
+// schedule_failed: a scheduled action that fails after its row exists is the
+// twin of runSchedules' journalScheduleFailure call for a boundary that never
+// got a row at all (the resource left the inventory, or stopped being
+// actionable) — together they are the two places a boundary can go wrong.
+func (h *Hub) finishAction(actionID int64, status, errMsg string, state *string, r store.AzureResource, origin string) {
 	if err := h.st.FinishAzureAction(actionID, status, errMsg, state, time.Now().UTC()); err != nil {
 		h.log.Error("azure action: finish", "err", err)
 	}
 	h.bus.Publish("azure_action", map[string]any{"id": actionID, "status": status})
+	if origin == "schedule" {
+		if status == "failed" {
+			h.journalScheduleFailure(r.ID, errMsg)
+		} else {
+			h.journalScheduleResolved(r.ID)
+		}
+	}
 }
 
 // interruptActions closes what was in flight when the hub died. It never

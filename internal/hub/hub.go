@@ -134,6 +134,7 @@ func (h *Hub) Run(ctx context.Context) error {
 	h.replayPendingDeliveries()
 	h.interruptActions()
 	h.interruptProvisions()
+	h.catchUpSchedules(time.Now().UTC())
 	azureInv := time.NewTicker(h.azureInterval("inventory"))
 	azureCost := time.NewTicker(h.azureInterval("cost"))
 	defer azureInv.Stop()
@@ -159,6 +160,7 @@ func (h *Hub) Run(ctx context.Context) error {
 			fast.Reset(h.interval())
 		case <-minute.C:
 			h.evaluate()
+			h.applySchedules(time.Now().UTC())
 		case <-h.akick:
 			// The settings changed. Sync now, and realign both tickers: they
 			// were built with whatever cadence was in force at boot, which for

@@ -188,6 +188,15 @@ func (f *azureFake) actionCalls() []string {
 	return append([]string(nil), f.actions...)
 }
 
+// waitActions waits until the fake has seen at least n action posts. The
+// fake records a call as soon as the POST arrives, before any holdAction
+// gate or the configured status, so this observes "the hub issued the
+// call," not "the call finished."
+func (f *azureFake) waitActions(t *testing.T, n int) {
+	t.Helper()
+	waitFor(t, func() bool { return len(f.actionCalls()) >= n }, fmt.Sprintf("expected %d action call(s)", n))
+}
+
 // failsFrom makes every call after the nth fail, counting from now.
 func (f *azureFake) failsFrom(n int) {
 	f.mu.Lock()

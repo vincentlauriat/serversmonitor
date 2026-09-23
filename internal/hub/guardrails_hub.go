@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"time"
 
@@ -9,6 +10,11 @@ import (
 	"github.com/vincentlauriat/serversmonitor/internal/hub/guardrails"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 )
+
+// catchUpWindow bounds how old a missed boundary may be and still be applied
+// at startup. Older than this, the hub says nothing rather than acting on a
+// stale intention — see catchUpSchedules.
+const catchUpWindow = 12 * time.Hour
 
 func (h *Hub) GuardrailSettings() guardrails.Settings { return guardrails.LoadSettings(h.st) }
 
@@ -107,9 +113,11 @@ func (h *Hub) journalGuardrails(evs []store.GuardrailEvent) {
 	}
 }
 
-// journalScheduleFailure fires schedule_failed for a boundary that produced no
-// action row. Kept beside runSchedules because that is the only caller; the
-// resolve side lives in finishAction, where a later success is observed.
+// journalScheduleFailure fires schedule_failed for resourceID, unless it is
+// already firing. Two call sites, for the two ways a boundary can fail: here
+// from runSchedules, for a boundary that produced no action row at all (the
+// resource left the inventory, or its type stopped being actionable); and
+// from finishAction, for a scheduled action whose row existed but failed.
 func (h *Hub) journalScheduleFailure(resourceID, msg string) {
 	last, err := h.st.LastGuardrailEventPerKey()
 	if err != nil {
@@ -121,6 +129,102 @@ func (h *Hub) journalScheduleFailure(resourceID, msg string) {
 	}
 	h.log.Warn("schedules: boundary not applied", "resource", resourceID, "err", msg)
 	h.journalGuardrails([]store.GuardrailEvent{{Subject: resourceID, Rule: "schedule_failed", Kind: "fired", At: time.Now().UTC()}})
+}
+
+// journalScheduleResolved is journalScheduleFailure's resolve half: a
+// scheduled action for resourceID has now succeeded. Called only from
+// finishAction — runSchedules never has a success to report, since a boundary
+// it could apply goes through StartActionFrom and finishAction from there.
+func (h *Hub) journalScheduleResolved(resourceID string) {
+	last, err := h.st.LastGuardrailEventPerKey()
+	if err != nil {
+		h.log.Error("guardrails: last events", "err", err)
+		return
+	}
+	if last[store.GuardrailKey{Subject: resourceID, Rule: "schedule_failed"}].Kind != "fired" {
+		return
+	}
+	h.journalGuardrails([]store.GuardrailEvent{{Subject: resourceID, Rule: "schedule_failed", Kind: "resolved", At: time.Now().UTC()}})
+}
+
+// applySchedules acts on boundaries, never on states: a resource switched on
+// by hand inside its off window stays on until the next boundary — the hub
+// never fights a person. Called every minute.
+func (h *Hub) applySchedules(now time.Time) { h.runSchedules(now, 0) }
+
+// catchUpSchedules is applySchedules with an age limit, for the boundary the
+// hub may have slept through while it was down. Called once at startup.
+func (h *Hub) catchUpSchedules(now time.Time) { h.runSchedules(now, catchUpWindow) }
+
+// runSchedules is applySchedules and catchUpSchedules' shared body. maxAge
+// disables catch-up (0 = no limit, i.e. the ordinary minute tick); a positive
+// maxAge refuses a boundary older than that, marking it seen without acting
+// on it — a boundary missed by hours is a stale intention, not one to replay
+// now.
+func (h *Hub) runSchedules(now time.Time, maxAge time.Duration) {
+	if _, _, ok := h.azureReady(); !ok {
+		return
+	}
+	scs, err := h.st.ListAzureSchedules()
+	if err != nil {
+		h.log.Error("schedules: list", "err", err)
+		return
+	}
+	loc := h.GuardrailSettings().Location()
+	for _, sc := range scs {
+		if !sc.Enabled {
+			continue
+		}
+		ws, err := guardrails.ParseWindows(sc.OffWindows)
+		if err != nil || len(ws) == 0 {
+			continue
+		}
+		b, off, ok := guardrails.LastBoundary(ws, loc, now)
+		// ok=false is LastBoundary's overloaded "nothing" — but len(ws) == 0
+		// was already handled above, so here it can only mean "no boundary at
+		// or before now within the lookback": the ordinary state of a
+		// resource in the middle of a long on-period, not a fault. Leave it
+		// alone — not disabled, not journalled, not marked.
+		if !ok || (sc.LastBoundary != nil && !b.After(*sc.LastBoundary)) {
+			continue
+		}
+		if maxAge > 0 && now.Sub(b) > maxAge {
+			h.log.Warn("schedules: missed boundary, too old to apply", "resource", sc.ResourceID, "boundary", b, "age", now.Sub(b))
+			if err := h.st.MarkScheduleBoundary(sc.ResourceID, b, now); err != nil {
+				h.log.Error("schedules: mark boundary", "err", err)
+			}
+			continue
+		}
+		// Advance first: a crash after this line loses the action, never
+		// duplicates it — lot 4's rule for interrupted actions (see
+		// interruptActions in azure_action.go), applied here to a boundary
+		// instead of an in-flight call.
+		if err := h.st.MarkScheduleBoundary(sc.ResourceID, b, now); err != nil {
+			h.log.Error("schedules: mark boundary", "err", err)
+			continue
+		}
+		action := azure.ActionStart
+		if off {
+			action = azure.ActionStop
+		}
+		// StartActionFrom normalizes the id itself; normalize here too so the
+		// guardrail key below matches the one finishAction uses (r.ID, always
+		// normalized) rather than whatever casing this row happens to hold.
+		id := azure.NormalizeID(sc.ResourceID)
+		if _, err := h.StartActionFrom(id, action, "schedule"); err != nil {
+			if errors.Is(err, store.ErrActionInFlight) {
+				h.log.Warn("schedules: a manual action is running, boundary skipped", "resource", sc.ResourceID, "boundary", b)
+				continue
+			}
+			// No action row exists, so finishAction will never run for this
+			// boundary and would never journal it. A resource that left the
+			// inventory, or whose type stopped being actionable, would
+			// otherwise stay as it is with nothing said. Spec §5 promises an
+			// event here.
+			h.log.Warn("schedules: action refused", "resource", sc.ResourceID, "action", action, "err", err)
+			h.journalScheduleFailure(id, err.Error())
+		}
+	}
 }
 
 func (h *Hub) resourceNames() map[string]string {
