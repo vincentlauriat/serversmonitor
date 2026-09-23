@@ -2478,6 +2478,7 @@ func TestABoundaryThatProducesNoActionRowStillFires(t *testing.T) {
 		t.Fatalf("schedule_failed journaled %d times", n)
 	}
 }
+```
 
 ```go
 func TestAFailedScheduledActionFiresScheduleFailed(t *testing.T) {

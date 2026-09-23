@@ -27,3 +27,6 @@ bin/
 
 # Aperant data directory
 .auto-claude/
+
+# superpowers SDD scratch
+.superpowers/
