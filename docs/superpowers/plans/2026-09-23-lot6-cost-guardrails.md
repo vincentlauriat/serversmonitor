@@ -2944,6 +2944,18 @@ git commit -m "feat(azure): delete an orphan by name — disks, NICs, plans; pub
 
 ### Task 10: API routes
 
+**Normalize `resource_id` on write.** Task 8's implementer flagged this: when they
+wired `runSchedules`, `azure_schedules.resource_id` had no non-test writer, so they
+normalized defensively at the read side before using it as a guardrail `Subject`.
+This task adds the first real writer (`PUT /api/v1/azure/schedules/{resource}`), so
+normalize there too, the same way. The reason it matters: a guardrail event's
+`Subject` is part of its key, so an un-normalized write and a normalized read would
+key a `fired` event differently from its `resolved` pair, and the alert would never
+close. Read what `runSchedules` does and match it exactly rather than inventing a
+second convention.
+
+
+
 **Files:**
 - Create: `internal/hub/server/api_guardrails.go`, `internal/hub/server/api_guardrails_test.go`
 - Modify: `internal/hub/server/server.go` (register routes)
