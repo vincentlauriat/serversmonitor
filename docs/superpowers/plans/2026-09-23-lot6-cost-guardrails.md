@@ -976,7 +976,7 @@ func TestThresholdsFireOnceEach(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 	// Same input again, with the journal holding the fired event: nothing.
-	in.Last[store.GuardrailKey{"budget", "budget_threshold", "80"}] = store.GuardrailEvent{Kind: "fired"}
+	in.Last[store.GuardrailKey{Subject: "budget", Rule: "budget_threshold", Detail: "80"}] = store.GuardrailEvent{Kind: "fired"}
 	if evs := Budget(in); len(keys(evs)) != 0 && keys(evs)["budget|budget_threshold|80"] != "" {
 		t.Fatalf("re-fired: %v", keys(evs))
 	}
@@ -985,7 +985,7 @@ func TestThresholdsFireOnceEach(t *testing.T) {
 func TestNewMonthResolvesEverything(t *testing.T) {
 	last := map[store.GuardrailKey]store.GuardrailEvent{
 		{"budget", "budget_threshold", "80"}:  {Kind: "fired"},
-		{"budget", "budget_threshold", "100"}: {Kind: "fired"},
+		{Subject: "budget", Rule: "budget_threshold", Detail: "100"}: {Kind: "fired"},
 		{"budget", "budget_projection", ""}:   {Kind: "fired"},
 		{"/s/vm1", "resource_share", ""}:      {Kind: "fired"},
 	}
@@ -1019,7 +1019,7 @@ func TestProjectionWaitsForFourBilledDaysAndHasHysteresis(t *testing.T) {
 		t.Fatalf("did not fire: %v", k)
 	}
 	// Firing, spent 33 → 99: still above 95, no resolve.
-	in.Spent, in.Last = 33, map[store.GuardrailKey]store.GuardrailEvent{{"budget", "budget_projection", ""}: {Kind: "fired"}}
+	in.Spent, in.Last = 33, map[store.GuardrailKey]store.GuardrailEvent{{Subject: "budget", Rule: "budget_projection", Detail: ""}: {Kind: "fired"}}
 	if k := keys(Budget(in)); k["budget|budget_projection|"] != "" {
 		t.Fatalf("resolved inside the band: %v", k)
 	}
@@ -1047,7 +1047,7 @@ func TestResourceShareIsPerResourceAndCountsDeletedOnes(t *testing.T) {
 
 func TestBudgetZeroDisablesAndResolves(t *testing.T) {
 	in := BudgetInput{Now: day(20), Budget: 0, Spent: 900, AsOf: day(20), Settings: DefaultSettings(),
-		Last: map[store.GuardrailKey]store.GuardrailEvent{{"budget", "budget_threshold", "80"}: {Kind: "fired"}}}
+		Last: map[store.GuardrailKey]store.GuardrailEvent{{Subject: "budget", Rule: "budget_threshold", Detail: "80"}: {Kind: "fired"}}}
 	got := keys(Budget(in))
 	if len(got) != 1 || got["budget|budget_threshold|80"] != "resolved" {
 		t.Fatalf("got %v", got)
@@ -1532,7 +1532,7 @@ func TestOrphansFireOnceAndResolveWhenTheReasonGoes(t *testing.T) {
 	if got["/s/d1|orphan|"] != "fired" || len(got) != 1 {
 		t.Fatalf("unverified must not fire: %v", got)
 	}
-	in.Last[store.GuardrailKey{"/s/d1", "orphan", ""}] = store.GuardrailEvent{Kind: "fired"}
+	in.Last[store.GuardrailKey{Subject: "/s/d1", Rule: "orphan", Detail: ""}] = store.GuardrailEvent{Kind: "fired"}
 	if got := keys(Orphans(in)); len(got) != 0 {
 		t.Fatalf("re-fired: %v", got)
 	}
