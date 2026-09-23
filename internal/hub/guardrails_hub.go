@@ -115,7 +115,11 @@ func (h *Hub) DeleteOrphan(resourceID, confirmName string) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(confirmName) != r.Name {
+	// Fail closed independent of the equality check below: a blank stored
+	// name and a blank confirmation are equal strings, but "nothing typed"
+	// must never satisfy "nothing to confirm".
+	confirm := strings.TrimSpace(confirmName)
+	if confirm == "" || r.Name == "" || confirm != r.Name {
 		return &azure.Refusal{Err: fmt.Errorf("%w: type %q to confirm", ErrWrongName, r.Name)}
 	}
 	kind, deletable := azure.KindOf(r.Type)

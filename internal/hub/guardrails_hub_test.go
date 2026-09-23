@@ -357,7 +357,7 @@ func TestDeleteOrphanNeedsTheNameAndADeletableKind(t *testing.T) {
 	// break the final assertion's key rather than the code under test.
 	diskID := f.id("d1")
 
-	if err := h.DeleteOrphan(diskID, "d2"); !errors.Is(err, ErrWrongName) {
+	if err := h.DeleteOrphan(diskID, "d2"); !errors.Is(err, ErrWrongName) || !azure.IsRefusal(err) {
 		t.Fatalf("wrong name: %v", err)
 	}
 	// azure.DeleteAny also refuses "ip" on its own, so errors.Is alone would
@@ -380,5 +380,39 @@ func TestDeleteOrphanNeedsTheNameAndADeletableKind(t *testing.T) {
 	last, _ := h.st.LastGuardrailEventPerKey()
 	if last[store.GuardrailKey{Subject: diskID, Rule: "orphan"}].Kind != "resolved" {
 		t.Fatalf("orphan not resolved after deletion: %v", last)
+	}
+}
+
+// TestDeleteOrphanRefusesAnEmptyStoredName covers the degenerate case of the
+// name-confirmation guard: nothing in the write path stops a resource row
+// from having an empty Name (ARM never sends one for a real resource, but the
+// schema does not forbid it either), and "" == "" would otherwise let an
+// empty confirmation delete it. An absent name must never match an absent
+// confirmation.
+func TestDeleteOrphanRefusesAnEmptyStoredName(t *testing.T) {
+	f := newAzureFake(t, "site1")
+	h := azureHub(t, f)
+	h.syncAzureInventory(context.Background())
+
+	armID := "/subscriptions/SUB/resourceGroups/RG/providers/Microsoft.Compute/disks/blank"
+	id := azure.NormalizeID(armID)
+	if err := h.st.ReplaceAzureInventory(nil, []store.AzureResource{{
+		ID:            id,
+		ARMID:         armID,
+		Name:          "",
+		Type:          "Microsoft.Compute/disks",
+		ResourceGroup: "RG",
+	}}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.DeleteOrphan(id, ""); !errors.Is(err, ErrWrongName) || !azure.IsRefusal(err) {
+		t.Fatalf("empty name: %v", err)
+	}
+	f.mu.Lock()
+	n := len(f.deletes)
+	f.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("nothing should have been deleted: %d delete(s)", n)
 	}
 }
