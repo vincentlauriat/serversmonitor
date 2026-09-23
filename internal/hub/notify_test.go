@@ -266,8 +266,8 @@ func TestOneTransitionWritesOneDeliveryPerChannel(t *testing.T) {
 		if seenChannel[d.Channel] {
 			t.Fatalf("channel %s got two rows for one transition", d.Channel)
 		}
-		if d.EventID != saved.ID {
-			t.Fatalf("delivery %d points at event %d, want %d", d.ID, d.EventID, saved.ID)
+		if d.EventID == nil || *d.EventID != saved.ID {
+			t.Fatalf("delivery %d points at event %v, want %d", d.ID, d.EventID, saved.ID)
 		}
 		seenID[d.ID], seenChannel[d.Channel] = true, true
 	}
