@@ -199,13 +199,69 @@ func TestAResourceAlreadyGoneIsRecordedAsDeleted(t *testing.T) {
 }
 
 func TestAnUnknownKindIsRefusedBeforeAnyCall(t *testing.T) {
+	// "disk" no longer stands in for an unknown kind: DeleteAny's tests below
+	// need apiVersionFor to know it. A kind genuinely absent from the switch
+	// is what this test is about.
 	f := newTagFake(t)
 	err := DeleteCreated(context.Background(), f.client(),
-		[]Deletable{{ARMID: "/x", Kind: "disk"}}, func(Deletable) error { return nil })
-	if err == nil || !strings.Contains(err.Error(), "disk") {
+		[]Deletable{{ARMID: "/x", Kind: "storageAccount"}}, func(Deletable) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "storageAccount") {
 		t.Fatalf("err = %v", err)
 	}
 	if n := len(f.requests()); n != 0 {
 		t.Fatalf("%d requests were sent", n)
+	}
+}
+
+func TestKindOfAndWhatTheRoleCanDelete(t *testing.T) {
+	cases := map[string][2]any{
+		"Microsoft.Compute/disks":             {"disk", true},
+		"Microsoft.Network/networkInterfaces": {"nic", true},
+		"Microsoft.Web/serverfarms":           {"plan", true},
+		"Microsoft.Compute/virtualMachines":   {"vm", true},
+		"Microsoft.Network/publicIPAddresses": {"ip", false},
+		"Microsoft.Web/sites":                 {"", false},
+	}
+	for typ, want := range cases {
+		kind, ok := KindOf(typ)
+		if kind != want[0].(string) || ok != want[1].(bool) {
+			t.Errorf("%s → %q %v, want %q %v", typ, kind, ok, want[0], want[1])
+		}
+	}
+}
+
+func TestDeleteAnyDoesNotCheckOwnershipAndTreats404AsDone(t *testing.T) {
+	var deleted []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/oauth2/") {
+			io.WriteString(w, `{"token_type":"Bearer","expires_in":3599,"access_token":"tok"}`)
+			return
+		}
+		if r.Method == http.MethodGet {
+			t.Errorf("no GET expected (no ownership check), got %s", r.URL.Path)
+		}
+		if r.Method == http.MethodDelete {
+			deleted = append(deleted, r.URL.Path)
+			if strings.HasSuffix(r.URL.Path, "/gone") {
+				w.WriteHeader(404)
+				io.WriteString(w, `{"error":{"code":"ResourceNotFound","message":"gone"}}`)
+				return
+			}
+			w.WriteHeader(200)
+		}
+	}))
+	defer srv.Close()
+	c := NewClient(staticSource("tok"), Options{Base: srv.URL})
+	if err := DeleteAny(context.Background(), c, "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/disks/d1", "disk"); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteAny(context.Background(), c, "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/disks/gone", "disk"); err != nil {
+		t.Fatalf("404 is done: %v", err)
+	}
+	if err := DeleteAny(context.Background(), c, "/x/ip1", "ip"); !errors.Is(err, ErrUndeletableKind) {
+		t.Fatalf("ip must be refused before any call: %v", err)
+	}
+	if len(deleted) != 2 {
+		t.Fatalf("deletes = %v", deleted)
 	}
 }

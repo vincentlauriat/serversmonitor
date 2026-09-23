@@ -3,7 +3,9 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/vincentlauriat/serversmonitor/internal/hub/azure"
@@ -91,6 +93,46 @@ func (h *Hub) journalOrphans(reasons map[string]string) {
 		return
 	}
 	h.journalGuardrails(guardrails.Orphans(guardrails.OrphanInput{Now: now, Reasons: reasons, Names: h.resourceNames(), Last: last}))
+}
+
+// DeleteOrphan is lot 5's delete-by-name generalised to an ARM id and type:
+// the second and last destructive call this hub makes, and it has the same
+// shape as the first — the name typed back, or nothing happens. There is no
+// ownership check here, unlike DeleteProvision: an orphan is by definition
+// something nobody is using, whoever created it, and the typed name is the
+// consent that stands in for one.
+//
+// It runs synchronously rather than firing a goroutine the way
+// DeleteProvision does. A disk, a NIC or a plan deletes in seconds, well
+// inside the handler's budget, and a modal that says "deleting…" and then
+// "gone" is what the person expects — no polling required on the page side.
+func (h *Hub) DeleteOrphan(resourceID, confirmName string) error {
+	_, client, ok := h.azureReady()
+	if !ok {
+		return ErrAzureOff
+	}
+	r, err := h.st.ActionableAzureResource(azure.NormalizeID(resourceID))
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(confirmName) != r.Name {
+		return &azure.Refusal{Err: fmt.Errorf("%w: type %q to confirm", ErrWrongName, r.Name)}
+	}
+	kind, deletable := azure.KindOf(r.Type)
+	if !deletable {
+		return &azure.Refusal{Err: fmt.Errorf("%w: %s (%s)", azure.ErrUndeletableKind, r.Name, r.Type)}
+	}
+	armID := r.ARMID
+	if armID == "" {
+		armID = r.ID // written before arm_id existed; the next sync fills it in
+	}
+	ctx, cancel := context.WithTimeout(h.baseCtx(), 10*time.Minute)
+	defer cancel()
+	if err := azure.DeleteAny(ctx, client, armID, kind); err != nil {
+		return err
+	}
+	h.kickAzure() // the next sweep drops the row and resolves the orphan event
+	return nil
 }
 
 // journalGuardrails is the single writer of the guardrail journal. Every line

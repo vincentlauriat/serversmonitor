@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -339,5 +340,45 @@ func TestAManualActionInFlightSkipsTheBoundary(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if as, _ := h.st.ListAzureActions(5); len(as) != 1 {
 		t.Fatalf("retried: %+v", as)
+	}
+}
+
+func TestDeleteOrphanNeedsTheNameAndADeletableKind(t *testing.T) {
+	f := newAzureFake(t, "site1")
+	f.disks = []string{"d1"}
+	f.ips = []string{"ip1"}
+	h := azureHub(t, f)
+	h.syncAzureInventory(context.Background())
+
+	// Captured once: the fake's id() resolves a name against its current
+	// disks/ips slices, and the delete below (and the "f.disks = nil" further
+	// down, standing in for the fake dropping it) empties that list — a
+	// second f.id("d1") after that point would resolve to "" and silently
+	// break the final assertion's key rather than the code under test.
+	diskID := f.id("d1")
+
+	if err := h.DeleteOrphan(diskID, "d2"); !errors.Is(err, ErrWrongName) {
+		t.Fatalf("wrong name: %v", err)
+	}
+	// azure.DeleteAny also refuses "ip" on its own, so errors.Is alone would
+	// still pass with DeleteOrphan's own !deletable guard deleted — it would
+	// just be DeleteAny's refusal reached over that inner defense-in-depth
+	// line instead. What the hub-level guard buys, and what actually needs
+	// checking, is that the refusal is an *azure.Refusal* — a client mistake
+	// (400), never a bare error the HTTP layer would read as the hub's own
+	// fault (500) — with the resource's name in it, not just its ARM id.
+	if err := h.DeleteOrphan(f.id("ip1"), "ip1"); !errors.Is(err, azure.ErrUndeletableKind) || !azure.IsRefusal(err) {
+		t.Fatalf("ip: %v", err)
+	}
+	if err := h.DeleteOrphan(diskID, "d1"); err != nil {
+		t.Fatal(err)
+	}
+	f.waitDeletes(t, 1)
+	// The next sweep no longer lists it (the fake dropped it), and the orphan event resolves.
+	f.disks = nil
+	h.syncAzureInventory(context.Background())
+	last, _ := h.st.LastGuardrailEventPerKey()
+	if last[store.GuardrailKey{Subject: diskID, Rule: "orphan"}].Kind != "resolved" {
+		t.Fatalf("orphan not resolved after deletion: %v", last)
 	}
 }
