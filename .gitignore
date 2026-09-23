@@ -17,6 +17,9 @@ bin/
 *.db
 *.db-wal
 *.db-shm
+# sauvegardes horodatees de la base locale (data/serversmonitor.db.bak-YYYYMMDD-HHMMSS)
+*.db.bak-*
+*.db.bak-*-wal
 
 # local config
 .env
