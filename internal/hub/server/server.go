@@ -96,6 +96,16 @@ func New(d Deps) http.Handler {
 	mux.Handle("GET /api/v1/azure/vms", s.auth(s.handleProvisions))
 	mux.Handle("POST /api/v1/azure/vms/delete", s.auth(s.handleDeleteProvision))
 
+	mux.Handle("GET /api/v1/azure/guardrails", s.auth(s.handleGetGuardrails))
+	mux.Handle("GET /api/v1/azure/guardrails/settings", s.auth(s.handleGetGuardrailSettings))
+	mux.Handle("PUT /api/v1/azure/guardrails/settings", s.auth(s.handlePutGuardrailSettings))
+	mux.Handle("GET /api/v1/azure/schedules", s.auth(s.handleGetSchedules))
+	// The resource id travels in the body for both, like every other Azure
+	// route that names an ARM resource — see handleStartAzureAction.
+	mux.Handle("PUT /api/v1/azure/schedules", s.auth(s.handlePutSchedule))
+	mux.Handle("POST /api/v1/azure/schedules/delete", s.auth(s.handleDeleteSchedule))
+	mux.Handle("POST /api/v1/azure/orphans/delete", s.auth(s.handleDeleteOrphan))
+
 	mux.Handle("GET /api/v1/settings", s.auth(s.handleGetSettings))
 	mux.Handle("PUT /api/v1/settings", s.auth(s.handlePutSettings))
 	mux.Handle("GET /api/v1/events", s.auth(s.handleEvents))

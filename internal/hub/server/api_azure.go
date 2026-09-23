@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vincentlauriat/serversmonitor/internal/hub/azure"
+	"github.com/vincentlauriat/serversmonitor/internal/hub/guardrails"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 )
 
@@ -26,6 +27,12 @@ type Azurer interface {
 	// DeleteProvision removes what one run created, after the name has been
 	// typed back. It is the only destructive call in the whole API.
 	DeleteProvision(provisionID int64, confirmName string) error
+	// GuardrailSettings is the four settings of lot 6, read live: there is
+	// nothing to reload, so unlike ReloadAzure this is called on every read.
+	GuardrailSettings() guardrails.Settings
+	// DeleteOrphan is lot 5's delete-by-name generalised to an ARM id and
+	// type. The second and last destructive call the hub makes.
+	DeleteOrphan(resourceID, confirmName string) error
 }
 
 type azureRow struct {
@@ -77,22 +84,20 @@ func (s *server) handleGetAzure(w http.ResponseWriter, r *http.Request, _ store.
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	costs, err := s.Store.ListAzureCosts(period)
+	// costByID is one row per resource for this period — the same rows
+	// costSummary itself read to compute spent, just keyed for the join
+	// below instead of summed across currencies.
+	_, _, costByID, costAsOfT, err := costSummary(s.Store, period)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	costByID := map[string]store.AzureCost{}
 	var costAsOf *time.Time
-	for _, c := range costs {
-		costByID[c.ResourceID] = c
-		if costAsOf == nil || c.AsOf.After(*costAsOf) {
-			t := c.AsOf
-			costAsOf = &t
-		}
+	if !costAsOfT.IsZero() {
+		costAsOf = &costAsOfT
 	}
 
-	rows := make([]azureRow, 0, len(resources)+len(costs))
+	rows := make([]azureRow, 0, len(resources)+len(costByID))
 	seen := map[string]bool{}
 	for _, res := range resources {
 		row := azureRow{ID: res.ID, Name: res.Name, Type: res.Type, Group: res.ResourceGroup,
@@ -112,21 +117,27 @@ func (s *server) handleGetAzure(w http.ResponseWriter, r *http.Request, _ store.
 	}
 	// A cost row with no inventory row is a resource deleted before this hub
 	// ever looked. Showing it is the difference between a right bill and a
-	// wrong one.
-	for _, c := range costs {
-		if seen[c.ResourceID] {
-			continue
+	// wrong one. Sorted by id: costByID is a map, and the rows must come out
+	// in a stable order across requests.
+	goneIDs := make([]string, 0, len(costByID))
+	for id := range costByID {
+		if !seen[id] {
+			goneIDs = append(goneIDs, id)
 		}
+	}
+	sort.Strings(goneIDs)
+	for _, id := range goneIDs {
+		c := costByID[id]
 		amount := c.Amount
-		rows = append(rows, azureRow{ID: c.ResourceID, Name: azure.LastSegment(c.ResourceID),
-			Type: typeFromID(c.ResourceID), Group: groupFromID(c.ResourceID),
+		rows = append(rows, azureRow{ID: id, Name: azure.LastSegment(id),
+			Type: typeFromID(id), Group: groupFromID(id),
 			Cost: &amount, Currency: c.Currency, Deleted: true, Tags: map[string]string{}})
 	}
 
 	// One total per currency. Never summed across: adding euros to dollars
 	// produces a number that is wrong in a way nobody notices.
 	spent := map[string]float64{}
-	for _, c := range costs {
+	for _, c := range costByID {
 		spent[c.Currency] += c.Amount
 	}
 	currencies := make([]string, 0, len(spent))
@@ -176,6 +187,39 @@ func groupFromID(id string) string {
 		}
 	}
 	return ""
+}
+
+// costSummary is the one place cost rows for a period are read and joined,
+// shared by the cost page (handleGetAzure) and the guardrails view
+// (handleGetGuardrails): the two must never compute "what was spent" two
+// different ways. spent is summed across every currency present — the
+// guardrails budget is one figure for the hub (lot 3's decision; see
+// guardrails.Budget), unlike the cost page's per-currency totals, which is
+// deliberately not this. currencies lists the distinct currency codes seen,
+// so a caller that wants to warn about mixing them can. byID is one row per
+// resource for the period, for a join; asOf is the latest AsOf across every
+// row, or the zero time when there is nothing for the period.
+func costSummary(st *store.Store, period string) (spent float64, currencies []string, byID map[string]store.AzureCost, asOf time.Time, err error) {
+	costs, err := st.ListAzureCosts(period)
+	if err != nil {
+		return 0, nil, nil, time.Time{}, err
+	}
+	byID = make(map[string]store.AzureCost, len(costs))
+	currencies = make([]string, 0)
+	seen := map[string]bool{}
+	for _, c := range costs {
+		spent += c.Amount
+		byID[c.ResourceID] = c
+		if !seen[c.Currency] {
+			seen[c.Currency] = true
+			currencies = append(currencies, c.Currency)
+		}
+		if c.AsOf.After(asOf) {
+			asOf = c.AsOf
+		}
+	}
+	sort.Strings(currencies)
+	return spent, currencies, byID, asOf, nil
 }
 
 // azureSettingsView is what the browser sees. The secret is a bool: it goes in,
@@ -362,6 +406,9 @@ type azureActionView struct {
 	Error        string  `json:"error"`
 	StateBefore  *string `json:"state_before"`
 	StateAfter   *string `json:"state_after"`
+	// Origin is "user" or "schedule": the recent-actions table shows which
+	// boundary or which person issued it.
+	Origin string `json:"origin"`
 }
 
 func (s *server) handleAzureActions(w http.ResponseWriter, r *http.Request, _ store.User) {
@@ -374,7 +421,7 @@ func (s *server) handleAzureActions(w http.ResponseWriter, r *http.Request, _ st
 	for _, a := range as {
 		v := azureActionView{ID: a.ID, ResourceID: a.ResourceID, ResourceName: a.ResourceName,
 			Action: a.Action, Status: a.Status, RequestedAt: a.RequestedAt.Format(time.RFC3339),
-			Error: a.Error, StateBefore: a.StateBefore, StateAfter: a.StateAfter}
+			Error: a.Error, StateBefore: a.StateBefore, StateAfter: a.StateAfter, Origin: a.Origin}
 		if a.FinishedAt != nil {
 			f := a.FinishedAt.Format(time.RFC3339)
 			v.FinishedAt = &f
