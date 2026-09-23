@@ -3,7 +3,7 @@
 Miroir français de `ARCHITECTURE_EN.md`, qui est la source de vérité. Les deux fichiers se modifient
 dans le même commit.
 
-État : lots 1 et 2 livrés. Les lots 3 à 6 (Azure) sont de la roadmap, rien ci-dessous ne les décrit.
+État : lots 1 à 6 livrés. Tout ce qui figure sur la feuille de route est décrit ci-dessous.
 
 ## L'invariant unique
 
@@ -59,6 +59,7 @@ manifesté, et c'est pour cela que c'est le hub, et non l'agent, qui décide qu'
 | `internal/hub/alerts` | La machine d'état et l'évaluateur. Pur : ni base, ni horloge propre. |
 | `internal/hub/notify` | Le rendu des messages, les trois canaux, et le dispatcher. |
 | `internal/hub/azure` | Les jetons Entra, le client ARM, le balayage d'inventaire et la requête de coûts. Aucun SDK Azure. |
+| `internal/hub/guardrails` | Les évaluateurs de budget, d'orphelins et de plages d'arrêt. Pur : ni base, ni horloge propre — la même forme qu'`alerts`, pour des sujets qui ne sont pas un hôte. |
 | `internal/hub/auth` | Hachage de mot de passe en Argon2id et limiteur de tentatives de connexion. |
 | `internal/hub/server` | L'API REST, les Server-Sent Events, et le front embarqué. |
 | `internal/hub/config` | Les variables d'environnement. Lues une fois au démarrage. |
@@ -127,13 +128,15 @@ stockés en chaînes RFC 3339 UTC, donc l'ordre lexical est l'ordre chronologiqu
 | `samples_10m`, `samples_1h`, `samples_1d` | Les moyennes agrégées. |
 | `containers`, `container_samples` | Les conteneurs Docker et leurs séries. |
 | `alert_rules` | Métrique, seuil, durée, hôte optionnel. |
-| `alert_events` | Journal en ajout seul des transitions `fired` et `resolved`. |
-| `deliveries` | Une ligne par (événement, canal) : `pending`, `sent` ou `failed`. |
+| `alert_events` | Journal en ajout seul des transitions `fired` et `resolved`, pour un hôte. |
+| `azure_guardrail_events` | La même forme en ajout seul qu'`alert_events`, pour un sujet qui n'est pas un hôte : `budget`, ou l'id ARM en minuscules d'une ressource. |
+| `deliveries` | Une ligne par (événement, canal) : `pending`, `sent` ou `failed`. Pointe vers exactement l'un des deux, `alert_events` ou `azure_guardrail_events` — un `CHECK` garantit que ce n'est jamais les deux ni jamais aucun. |
 | `users`, `sessions` | Le compte administrateur unique et ses cookies. |
-| `settings` | Clé/valeur : intervalle, rétentions, et toute la configuration des notifications et d'Azure. |
-| `azure_resources` | Une ligne par ressource, telle que le dernier balayage réussi l'a vue. `state` et `deleted_at` sont nullables. |
+| `settings` | Clé/valeur : intervalle, rétentions, et toute la configuration des notifications, d'Azure et des guardrails. |
+| `azure_resources` | Une ligne par ressource, telle que le dernier balayage réussi l'a vue. `state` et `deleted_at` sont nullables ; `orphan_reason`/`orphan_since` sont recalculés à chaque balayage. |
 | `azure_costs` | Une ligne par (ressource, mois). **Aucune clé étrangère, délibérément.** |
-| `azure_actions` | Une ligne par démarrage, arrêt ou redémarrage, écrite avant l'appel. Un index unique partiel n'en autorise qu'une en vol par ressource. |
+| `azure_actions` | Une ligne par démarrage, arrêt ou redémarrage, écrite avant l'appel. Un index unique partiel n'en autorise qu'une en vol par ressource. `origin` vaut `user` ou `schedule`. |
+| `azure_schedules` | Une ligne par ressource planifiée : les plages d'arrêt, si elle est activée, et la dernière limite sur laquelle le hub a agi. |
 | `azure_provisions` | Une ligne par tentative de création de VM, écrite avant le premier appel. Un index unique partiel n'en autorise qu'une en vol par nom. |
 | `azure_provision_resources` | Une ligne par ressource créée par un provisioning, écrite dès qu'elle existe. `deleted_at` est posé quand une personne la supprime, jamais par le hub. |
 | `azure_sync` | Une ligne par périmètre : le dernier inventaire et la dernière requête de coûts ont-ils abouti, et sinon pourquoi. |
@@ -309,6 +312,52 @@ Les deux appartiennent désormais au type de ressource, dans une table `provider
 ensemble l'api-version, les verbes, l'URL d'état et le lecteur d'état. Ajouter un troisième
 fournisseur est une ligne ; en partager une constante entre deux était le bug.
 
+### Guardrails
+
+`internal/hub/guardrails` calcule les règles de budget, les détecteurs d'orphelins et les limites de
+plages d'arrêt. Il ne porte aucun état propre : chaque fonction prend l'inventaire, les coûts, les
+réglages et le dernier événement journalisé pour une instance de règle, et renvoie les transitions
+voulues — la même forme qu'`alerts` pour des sujets qui ne sont pas un hôte.
+
+Le flux de données est une seule forme partout dans ce lot : **synchronisation → évaluateur →
+journal → dispatcher.** Une synchronisation de coûts réussie déclenche les règles de budget ; une
+synchronisation d'inventaire réussie déclenche les détecteurs d'orphelins, en réutilisant les
+lectures typées que le balayage a déjà faites (voir plus haut : l'appel au catalogue ne porte aucun
+état, donc un second appel par fournisseur le complète — les détecteurs d'orphelins réutilisent ce
+second appel plutôt que d'en émettre un troisième). L'évaluateur compare l'état voulu à
+`azure_guardrail_events`, le pendant en ajout seul d'`alert_events` pour un sujet sans hôte, et
+`journalGuardrails` en est l'unique rédacteur : seules les transitions sont écrites, exactement comme
+au lot 1. Chaque ligne qu'il écrit devient un `notify.Message` remis au dispatcher existant — aucun
+second chemin de livraison, aucune seconde politique de reprise, aucun canal propre aux guardrails.
+
+Les plages d'arrêt suivent le même journal mais un déclencheur différent : le tic à la minute
+demande, pour chaque plage activée, si la dernière limite de fenêtre franchie (dans le fuseau
+configuré) est plus récente que le `last_boundary` déjà enregistré. Si oui, exactement une action du
+lot 4 est émise — `stop` pour un site, `deallocate` pour une VM au début de la plage, `start` à sa
+fin — avec `origin=schedule`, en partageant le verrou en vol d'`azure_actions` avec les actions
+manuelles. Une action planifiée qui échoue journalise `schedule_failed` pour cette ressource plutôt
+que de réessayer immédiatement ; la prochaine limite retente.
+
+Trois invariants tiennent partout dans ce lot :
+
+- **N'évaluer qu'après une synchronisation réussie.** Une synchronisation échouée ne change aucune
+  ligne et ne lance aucun évaluateur : le silence n'est pas zéro, et un mois sans donnée de coût ne
+  doit pas se résoudre en « budget respecté ». La bannière rouge du lot 3 au-dessus du dernier bon
+  tableau est ce que la page montre en attendant.
+- **N'agir que sur les limites franchies, jamais en continu.** Une plage demande « une limite
+  vient-elle d'être franchie », pas « cette ressource devrait-elle être éteinte maintenant » — le hub
+  ne combat jamais une personne qui a rallumé une machine à la main dans sa propre plage d'arrêt.
+  `last_boundary` avance **avant** l'appel, le même principe que l'`interrupted` du lot 4 : un crash
+  entre les deux perd l'action plutôt que de la rejouer. Le rattrapage au démarrage est borné aux
+  limites de moins de douze heures, pour qu'un hub resté éteint tout un week-end n'arrête pas le lundi
+  une machine que quelqu'un est en train d'utiliser.
+- **Ne supprimer que par nom.** Un orphelin n'est supprimé que si une personne a tapé son nom exact et
+  qu'il correspond à ce qu'Azure a renvoyé — la règle du lot 5 généralisée d'une VM à n'importe quel
+  id et type ARM. Une ressource que le hub n'a pas pu vérifier (une lecture typée qui a répondu 403)
+  est `unverified` et n'est jamais supprimable, quel que soit ce que son type autoriserait par
+  ailleurs : la page affiche « non vérifiée », jamais « saine » — la seule chose que ce lot ne peut
+  pas faire, c'est deviner.
+
 ### Opérations asynchrones
 
 Compute répond `202 Accepted` et termine des minutes plus tard. Le chemin d'appel renvoie donc la
@@ -468,7 +517,7 @@ est dans la base et éditable depuis l'interface.
 
 ## Tests
 
-251 tests Go sur 13 paquets et 45 tests front, plus un test bout en bout qui lance un vrai hub et un
+425 tests Go sur 15 paquets et 89 tests front, plus un test bout en bout qui lance un vrai hub et un
 vrai agent sur un vrai WebSocket et vérifie qu'une alerte atteint un webhook et que la livraison est
 enregistrée.
 

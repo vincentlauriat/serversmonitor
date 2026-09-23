@@ -3,7 +3,7 @@
 Source of truth for technical decisions. `ARCHITECTURE.md` is its French mirror and must be edited
 in the same commit.
 
-State: lots 1 and 2 delivered. Lots 3 to 6 (Azure) are roadmap, and nothing below describes them.
+State: lots 1 to 6 delivered. Everything on the roadmap is described below.
 
 ## The one invariant
 
@@ -58,7 +58,7 @@ is why the hub, not the agent, decides a host is offline.
 | `internal/hub/alerts` | The state machine and the evaluator. Pure: no database, no clock of its own. |
 | `internal/hub/notify` | Message rendering, the three channels, and the dispatcher. |
 | `internal/hub/azure` | Entra tokens, the ARM client, the inventory sweep and the cost query. No Azure SDK. |
-| `internal/hub/azure` | Entra tokens, the ARM client, the inventory sweep and the cost query. No Azure SDK. |
+| `internal/hub/guardrails` | Budget, orphan and stop-schedule evaluators. Pure: no database, no clock of its own — the same shape as `alerts`, for subjects with no host. |
 | `internal/hub/auth` | Argon2id password hashing and the login rate limiter. |
 | `internal/hub/server` | The REST API, Server-Sent Events, and the embedded front-end. |
 | `internal/hub/config` | Environment variables. Read once at startup. |
@@ -126,14 +126,16 @@ lexical order is chronological order.
 | `samples_10m`, `samples_1h`, `samples_1d` | Rolled-up averages. |
 | `containers`, `container_samples` | Docker containers and their series. |
 | `alert_rules` | Metric, threshold, duration, optional host. |
-| `alert_events` | Append-only log of `fired` and `resolved` transitions. |
-| `deliveries` | One row per (event, channel): `pending`, `sent` or `failed`. |
+| `alert_events` | Append-only log of `fired` and `resolved` transitions, for a host. |
+| `azure_guardrail_events` | The same append-only shape as `alert_events`, for a subject that is not a host: `budget`, or a resource's lowercased ARM id. |
+| `deliveries` | One row per (event, channel): `pending`, `sent` or `failed`. Points at exactly one of `alert_events` or `azure_guardrail_events` — a `CHECK` enforces that it is never both and never neither. |
 | `users`, `sessions` | The single admin account and its cookies. |
-| `settings` | Key/value: interval, retentions, and all notification and Azure configuration. |
-| `azure_resources` | One row per resource, as the last successful sweep saw it. `state` and `deleted_at` are nullable. |
+| `settings` | Key/value: interval, retentions, and all notification, Azure and guardrails configuration. |
+| `azure_resources` | One row per resource, as the last successful sweep saw it. `state` and `deleted_at` are nullable; `orphan_reason`/`orphan_since` recompute on every sweep. |
 | `azure_costs` | One row per (resource, month). **No foreign key, deliberately.** |
 | `azure_sync` | One row per scope: whether the last inventory and the last cost query worked, and why not. |
-| `azure_actions` | One row per start, stop or restart, written before the call. A partial unique index allows one in flight per resource. |
+| `azure_actions` | One row per start, stop or restart, written before the call. A partial unique index allows one in flight per resource. `origin` is `user` or `schedule`. |
+| `azure_schedules` | One row per scheduled resource: off windows, whether it is enabled, and the last boundary the hub acted on. |
 | `azure_provisions` | One row per attempt at creating a VM, written before the first call. A partial unique index allows one in flight per name. |
 | `azure_provision_resources` | One row per resource a provision created, written as it lands. `deleted_at` is set when a person deletes it, never by the hub. |
 
@@ -297,6 +299,48 @@ Both now belong to the resource type, in one `providers` table that carries the 
 verbs, the state URL and the state reader together. Adding a third provider is a row; sharing a
 constant between two was the bug.
 
+### Guardrails
+
+`internal/hub/guardrails` computes budget rules, orphan detectors and stop-schedule boundaries. It
+holds no state of its own: every function takes inventory, costs, settings and the last event
+journaled for a rule instance, and returns the wanted transitions, the same shape as `alerts` for
+subjects that are not a host.
+
+The data flow is one shape everywhere in this lot: **sync → evaluator → journal → dispatcher.** A
+successful cost sync runs the budget rules; a successful inventory sync runs the orphan detectors,
+using the typed reads the sweep already made (§ above: the catalogue call carries no state, so a
+second call per provider fills it in — the orphan detectors reuse that second call rather than
+issuing a third). The evaluator diffs the wanted state against `azure_guardrail_events`, the
+append-only counterpart of `alert_events` for a subject with no host, and `journalGuardrails` is the
+single writer: only transitions are stored, exactly as in lot 1. Every line it writes becomes a
+`notify.Message` handed to the existing dispatcher — no second delivery path, no second retry
+policy, no guardrail-specific channel.
+
+Stop schedules follow the same journal but a different trigger: the minute tick asks, for every
+enabled schedule, whether the most recent window boundary (in the configured zone) is more recent
+than the `last_boundary` already recorded. If so, exactly one lot 4 action is issued —
+`stop` for a site, `deallocate` for a VM at a window start, `start` at a window end — with
+`origin=schedule`, sharing the in-flight lock of `azure_actions` with manual actions. A scheduled
+action that fails journals `schedule_failed` for that resource rather than retrying immediately; the
+next boundary tries again.
+
+Three invariants hold everywhere in this lot:
+
+- **Evaluate only after a successful sync.** A failed sync changes no row and runs no evaluator:
+  silence is not zero, and a month with no cost data must not resolve into "budget respected". The
+  lot 3 red banner over the last good table is what the page shows meanwhile.
+- **Act on boundaries only, never continuously.** A schedule asks "did a boundary just pass", not
+  "should this be off right now" — the hub never fights a person who switched a machine on by hand
+  inside its own off window. `last_boundary` advances **before** the call, the same principle as
+  lot 4's `interrupted`: a crash between the two loses the action instead of replaying it. Catch-up
+  at startup is bounded to boundaries less than twelve hours old, so a hub down over a long weekend
+  does not stop a machine someone is using by Monday.
+- **Delete by name only.** An orphan is deleted only when a person typed its exact name and it
+  matched what Azure returned — the lot 5 rule generalised from a VM to any ARM id and type. A
+  resource the hub could not verify (a typed read that answered 403) is `unverified` and never
+  deletable, whatever its type would otherwise allow: the page shows "not verified", never
+  "healthy", and the one thing the lot cannot do is guess.
+
 ### Asynchronous operations
 
 Compute answers `202 Accepted` and finishes minutes later. The call path therefore returns the whole
@@ -442,7 +486,7 @@ database and editable from the interface.
 
 ## Testing
 
-251 Go tests across 13 packages and 45 front-end tests, plus an end-to-end test that runs a real hub
+425 Go tests across 15 packages and 89 front-end tests, plus an end-to-end test that runs a real hub
 and a real agent over a real WebSocket and asserts that an alert reaches a webhook and that the
 delivery is recorded.
 

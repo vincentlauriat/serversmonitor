@@ -29,6 +29,7 @@ router or a VM without a public address be watched without opening a single port
 | Machine | CPU, memory and swap, disks per mount point, disk I/O, network, load, temperatures, uptime |
 | Docker | Every container: state, CPU, memory, network — read-only, through the socket |
 | Alerts | CPU, memory, disk, load, temperature, bandwidth, plus a built-in offline rule |
+| Cost guardrails | Budget thresholds and an end-of-month projection, orphaned Azure resources, stop schedules for App Services and VMs |
 
 ## The rule that makes it trustworthy
 
@@ -157,16 +158,45 @@ intact, trace id included — but the first successful sync, the first resource 
 and the first VM that actually boots will be yours. That last one is the whole point of lot 5, and
 it stays unproven.
 
+## Cost guardrails
+
+Three rules, all evaluated only after a **successful** sync — a failed one changes nothing, because
+silence is not the same as "budget respected" — and delivered through the same channels as every
+other alert.
+
+**Budget.** Two thresholds fire once each as month-to-date spend crosses them (80 % and 100 % of the
+budget by default), plus an end-of-month projection with a 5 % band so it does not flap right at the
+line, and a per-resource share alert for anything eating an outsized part of the budget. A resource
+deleted mid-month still counts: it cost money, and dropping it would understate the bill. It refuses
+to project before the 4th billed day — three days of data is noise, not a trend.
+
+**Orphans.** Five typed checks per sweep: an unattached disk, an unassociated public IP, a NIC with
+no VM, an App Service plan with no sites, and a hub-created VM whose agent has gone quiet. A resource
+Azure refuses to read in detail (403) is shown as "not verified", never as healthy — and an
+unverified resource can never be deleted from the page, whatever its type would otherwise allow. It
+refuses to guess: a read that fails is not a clean bill of health.
+
+**Stop schedules.** Off windows in one time zone for the whole hub. The hub only acts when a window
+boundary is crossed, and it advances its record of the boundary before calling Azure, so a crash
+loses the action rather than repeating it. A machine switched on by hand inside its window stays on
+until the next boundary. It refuses to fight a person, and it refuses to enforce continuously.
+
+Deleting an orphan still needs its name typed, exactly as in lot 5 — this lot adds no new way to
+delete anything without a person doing it on purpose.
+
 ## What this does not do yet
 
 - **The hub does not check the subnet can reach the internet.** It cannot: reading it is one
   permission and fixing it is another, and both are outside the role it is given. If
   `defaultOutboundAccess` is false and there is no NAT Gateway, the VM boots and the agent never
   connects, with nothing on the hub's side to say why.
-- **No cost guardrails.** Schedules, orphan detection and budget alerts arrive in lot 6.
 - **No per-rule routing.** Every enabled channel receives every transition. Mute a host to silence it.
 - **One user.** A single local admin account; Entra ID is deferred.
 - **No TLS of its own.** Put a reverse proxy in front for anything but localhost.
+- **No automatic deletion.** Every guardrail only ever alerts or, for an orphan, deletes what a
+  person confirmed by name. Nothing is removed on a timer or a threshold.
+- **One time zone.** Every stop schedule shares one hub-wide zone; per-schedule zones are not
+  supported.
 
 ## Roadmap
 
@@ -177,7 +207,7 @@ it stays unproven.
 | 3 | Azure read: inventory, state, costs vs budget | **done** |
 | 4 | Azure actions: start, stop, restart | **done** |
 | 5 | VM provisioning with the agent pre-installed | **done** |
-| 6 | Cost guardrails: schedules, orphans, budget alerts | |
+| 6 | Cost guardrails: schedules, orphans, budget alerts | **done** |
 
 ## Design notes
 
