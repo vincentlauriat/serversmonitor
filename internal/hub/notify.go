@@ -109,7 +109,7 @@ func guardrailMessage(cfg notify.Config, e store.GuardrailEvent, name string) no
 	if e.Detail != "" {
 		metric = e.Rule + " " + e.Detail + "%"
 	}
-	return notify.Message{HostName: subject, Metric: metric, Kind: e.Kind, Value: e.Value, At: e.At, Link: cfg.AzureLink()}
+	return notify.Message{HostName: subject, Metric: metric, Kind: e.Kind, Value: e.Value, At: e.At, Link: cfg.AzureLink(), Guardrail: true}
 }
 
 // replayPendingDeliveries picks up what a previous run left unfinished.

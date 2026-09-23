@@ -105,6 +105,56 @@ func TestResolvedIsDistinguishable(t *testing.T) {
 	}
 }
 
+func TestGuardrailRenderingIsFactualNotAlertCopy(t *testing.T) {
+	// An orphan guardrail has no ValueText (like the implicit status rule),
+	// but it is not a host and must not borrow the host-alert copy.
+	m := Message{HostName: "d1", Metric: "orphan", Kind: "fired", At: at, Guardrail: true}
+	title := m.Title()
+	if strings.Contains(title, "  ") {
+		t.Fatalf("title has a double space: %q", title)
+	}
+	if title != "d1 orphan (fired)" {
+		t.Fatalf("title = %q", title)
+	}
+	body := m.Body()
+	if strings.Contains(body, "Host:") {
+		t.Fatalf("a guardrail subject is not a host:\n%s", body)
+	}
+	if strings.Contains(body, "no sample for three intervals") {
+		t.Fatalf("d1 is a disk, not a host with a missed sample:\n%s", body)
+	}
+	if !strings.Contains(body, "Subject: d1") {
+		t.Fatalf("body is missing the Subject line:\n%s", body)
+	}
+
+	// The status rule (host offline/online) also has an empty ValueText, and
+	// must keep the original alert copy: Guardrail is false by zero value.
+	off := Message{HostName: "pi-salon", Metric: "status", Kind: "fired", At: at}
+	if got := off.Title(); got != "pi-salon is offline" {
+		t.Fatalf("status title regressed: %q", got)
+	}
+	if !strings.Contains(off.Body(), "Host:   pi-salon") {
+		t.Fatalf("status body regressed:\n%s", off.Body())
+	}
+}
+
+func TestGuardrailWithAValueStillShowsIt(t *testing.T) {
+	// budget_threshold, resource_share and budget_projection carry a value
+	// and must keep showing it, just without the alert-only Rule line.
+	m := Message{HostName: "Budget", Metric: "budget_threshold 80%", Kind: "fired", Value: 95, At: at, Guardrail: true}
+	title := m.Title()
+	if !strings.Contains(title, "95 %") {
+		t.Fatalf("title dropped the value: %q", title)
+	}
+	body := m.Body()
+	if !strings.Contains(body, "Value:   95 %") {
+		t.Fatalf("body dropped the value:\n%s", body)
+	}
+	if strings.Contains(body, "Rule:") {
+		t.Fatalf("a guardrail body must not restate a threshold/duration rule:\n%s", body)
+	}
+}
+
 func TestRetryableMarking(t *testing.T) {
 	base := errors.New("boom")
 	if Retryable(base) {

@@ -110,16 +110,18 @@ func TestAFailedSyncEvaluatesNothing(t *testing.T) {
 	}
 }
 
-// TestGuardrailTransitionsAreDeliveredAndReplayed proves the wiring end to
-// end: a fired transition reaches a channel, and every delivery row it wrote
-// points back at the guardrail journal rather than the alert one.
+// TestGuardrailTransitionsAreDelivered proves the wiring end to end: a fired
+// transition reaches a channel, and every delivery row it wrote points back
+// at the guardrail journal rather than the alert one. The replay path (a
+// pending guardrail delivery left by a previous run) is covered separately
+// by TestPendingGuardrailDeliveriesAreReplayedOnBoot in notify_test.go.
 //
 // The count of transitions that fire here is not asserted: evaluateBudget
 // reads time.Now(), so budget_projection's own on/off band depends on how
 // many days of the month are billed as of today, and would make an assertion
 // pinned to a literal count flaky across the month. Asserting the message
 // content and the delivery→journal link is what this test is for.
-func TestGuardrailTransitionsAreDeliveredAndReplayed(t *testing.T) {
+func TestGuardrailTransitionsAreDelivered(t *testing.T) {
 	f := newAzureFake(t, "site1")
 	f.costs = map[string]float64{"site1": 95}
 	h := azureHub(t, f)

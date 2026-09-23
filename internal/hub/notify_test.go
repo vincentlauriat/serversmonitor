@@ -163,6 +163,47 @@ func TestPendingDeliveriesAreReplayedOnBoot(t *testing.T) {
 	}
 }
 
+func TestPendingGuardrailDeliveriesAreReplayedOnBoot(t *testing.T) {
+	// The mirror of TestPendingDeliveriesAreReplayedOnBoot for the guardrail
+	// fallback in replayPendingDeliveries: a hub killed after journaling a
+	// guardrail transition but before delivering it must finish the job when
+	// it comes back.
+	c := newCatcher(t)
+	dir := t.TempDir()
+	h1, err := New(config.Config{DataDir: dir}, "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notify.SaveConfig(h1.st, notify.Config{Webhook: notify.WebhookConfig{Enabled: true, URL: c.srv.URL}})
+	ev, err := h1.st.InsertGuardrailEvent(store.GuardrailEvent{
+		Subject: "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/disks/d1",
+		Rule:    "orphan", Kind: "fired", At: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A delivery recorded but never attempted: exactly what a crash leaves
+	// behind between CreateGuardrailDelivery and MarkDeliverySent.
+	if _, err := h1.st.CreateGuardrailDelivery(ev.ID, "webhook", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	h1.Close()
+
+	h2, err := New(config.Config{DataDir: dir}, "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h2.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h2.dispatch.Start(ctx)
+	h2.replayPendingDeliveries()
+	p := c.await(t)
+	if p.Host != "d1" || p.Metric != "orphan" {
+		t.Fatalf("payload = %+v", p)
+	}
+}
+
 func TestDeliveryDiesWithItsEvent(t *testing.T) {
 	// The cascade removes the event with its host, so a pending row can outlive
 	// what it describes for as long as it takes the worker to pick it up.
