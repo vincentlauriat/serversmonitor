@@ -99,6 +99,8 @@ export interface AzureAction {
   error: string;
   state_before: string | null;
   state_after: string | null;
+  /** "user" or "schedule" — who asked for this action. */
+  origin: string;
 }
 
 /**
