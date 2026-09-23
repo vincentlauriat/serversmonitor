@@ -200,7 +200,7 @@ under the resource table:
 | typed read 403 | `unverified`, neither healthy nor orphan, no event |
 | typed read 404 | skipped this sweep |
 | scheduled action failed | action log + `schedule_failed` event; no retry; next boundary tries |
-| zone unknown at save | refused with the name; at runtime (cannot happen with `time/tzdata` embedded) fall back to UTC with a log line and a page warning |
+| zone unknown at save | refused with the name. **Corrected after the final review:** this row also promised a runtime fallback "with a log line and a page warning". `Location()` does fall back to UTC, silently, and nothing logs it. The row contradicted itself — its own parenthesis said the case cannot happen once `time/tzdata` is embedded, which it is — so the promise is struck rather than left unfulfilled. Building a log line and a warning banner for a branch that `Validate()` and the embedded zone database make unreachable would prove nothing. See `Location()`'s comment. |
 | orphan delete refused by Azure | Azure's message, intact, in the modal; the row stays |
 | manual action in flight at a boundary | boundary skipped and logged, not retried |
 

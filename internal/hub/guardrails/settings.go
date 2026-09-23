@@ -108,8 +108,16 @@ func (c Settings) Validate() error {
 	return nil
 }
 
-// Location never returns nil. A zone that vanished after being saved is a
-// runtime oddity (the zone database is embedded), and the caller logs it.
+// Location never returns nil.
+//
+// The UTC fallback is defensive, not an observable error path, and nothing
+// logs it: Validate refuses an unknown zone before it can be stored, and
+// time/tzdata is embedded in the binary, so a saved zone cannot vanish at
+// runtime. Reaching the fallback would take someone editing the settings row
+// by hand while the hub is stopped. An earlier version of this comment said
+// the caller logs it; no caller ever did, and the design spec's matching
+// promise of a log line and a page warning is struck for the same reason —
+// building either would prove nothing about a branch that cannot run.
 func (c Settings) Location() *time.Location {
 	loc, err := time.LoadLocation(c.Timezone)
 	if err != nil || c.Timezone == "" {
