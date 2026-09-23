@@ -2226,6 +2226,17 @@ func intervals(ws []Window, loc *time.Location, t time.Time) []interval {
 // clock is time.Date at a wall-clock minute of the day. In the spring gap
 // time.Date moves 02:30 to 03:30; the spec wants the next hour, so a start
 // that lands in the gap is pushed to the first instant after it. In the
+// **CORRECTED 2026-09-23, after task 7 ran.** The three paragraphs below claimed
+// `time.Date` returns the FIRST occurrence of an ambiguous autumn wall clock. That
+// is false. Verified empirically against Go on this machine: for Europe/Paris,
+// `time.Date(2026,10,25, 2,30, ...)` returns 02:30 CET (UTC+1, UTC 01:30), the
+// SECOND, post-transition occurrence. A nonexistent spring wall clock normalises
+// FORWARD (02:30 becomes 03:30 CEST). The shipped `clock` below, built on the false
+// claim, failed the spring assertion outright. Task 7's implementation carries the
+// correct handling: an explicit earlier-occurrence check that reads the real offset
+// delta from the zone rather than assuming one hour, since not every zone shifts by
+// an hour. Read internal/hub/guardrails/schedule.go, not the snippet below.
+
 // autumn overlap time.Date picks the first occurrence, which is the one
 // boundary the spec wants applied.
 func clock(day time.Time, mins int) time.Time {
