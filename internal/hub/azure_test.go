@@ -27,6 +27,13 @@ type azureFake struct {
 	calls     int
 	failAfter int
 	sites     []string
+	// Lot 6: unattached disks the catalogue lists, whose typed read the
+	// orphan sweep follows; diskReadStatus makes that typed read fail
+	// without touching the catalogue pass. costs, when set, replaces the
+	// hardcoded cost query rows with one row per name, keyed the same way.
+	disks          []string
+	diskReadStatus int
+	costs          map[string]float64
 	// Lot 4: what the fake did with actions, and what it answers.
 	actions      []string
 	actionStatus int    // 0 = succeed
@@ -65,7 +72,24 @@ func newAzureFake(t *testing.T, sites ...string) *azureFake {
 				parts = append(parts, fmt.Sprintf(
 					`{"id":"/subscriptions/SUB/resourceGroups/RG/providers/Microsoft.Web/sites/%s","name":%q,"type":"Microsoft.Web/sites","location":"westeurope","properties":null}`, s, s))
 			}
+			for _, d := range f.disks {
+				parts = append(parts, fmt.Sprintf(
+					`{"id":"/subscriptions/SUB/resourceGroups/RG/providers/Microsoft.Compute/disks/%s","name":%q,"type":"Microsoft.Compute/disks","location":"westeurope","properties":null}`, d, d))
+			}
 			fmt.Fprintf(w, `{"value":[%s]}`, strings.Join(parts, ","))
+		// The typed orphan read on one disk: GET …/disks/<name>. diskReadStatus
+		// fails it without touching the catalogue pass above, so a test can
+		// prove the inventory stays green while the orphan scope alone fails.
+		case strings.Contains(r.URL.Path, "/Microsoft.Compute/disks/"):
+			f.mu.Lock()
+			code := f.diskReadStatus
+			f.mu.Unlock()
+			if code != 0 {
+				w.WriteHeader(code)
+				io.WriteString(w, `{"error":{"code":"InternalServerError","message":"disk read failed"}}`)
+				return
+			}
+			io.WriteString(w, `{"properties":{"diskState":"Unattached"}}`)
 		// An action: POST …/sites/<name>/{start,stop,restart}.
 		case r.Method == http.MethodPost && isActionPath(r.URL.Path):
 			f.mu.Lock()
@@ -110,6 +134,18 @@ func newAzureFake(t *testing.T, sites ...string) *azureFake {
 		// character before CostManagement is a dot, not a slash. Matching
 		// "/CostManagement/query" answers 404 and the sync reads as broken.
 		case strings.Contains(r.URL.Path, "CostManagement/query"):
+			f.mu.Lock()
+			costs := f.costs
+			f.mu.Unlock()
+			if len(costs) > 0 {
+				var rows []string
+				for name, amount := range costs {
+					rows = append(rows, fmt.Sprintf(`[%v,%q,"EUR"]`, amount, f.id(name)))
+				}
+				fmt.Fprintf(w, `{"properties":{"columns":[{"name":"Cost"},{"name":"ResourceId"},{"name":"Currency"}],"rows":[%s]}}`,
+					strings.Join(rows, ","))
+				return
+			}
 			io.WriteString(w, `{"properties":{"columns":[{"name":"Cost"},{"name":"ResourceId"},{"name":"Currency"}],
 			 "rows":[[3.5,"/subscriptions/SUB/resourceGroups/RG/providers/Microsoft.Web/sites/a","EUR"],
 			         [9.0,"/subscriptions/sub/resourcegroups/rg/providers/microsoft.insights/components/long-gone","EUR"]]}}`)
@@ -128,6 +164,22 @@ func isActionPath(p string) bool {
 		}
 	}
 	return false
+}
+
+// id returns the lowercased ARM id this fake serves for a site or a disk
+// name, matching what NormalizeID gives the resource row stored for it.
+func (f *azureFake) id(name string) string {
+	for _, s := range f.sites {
+		if s == name {
+			return azure.NormalizeID(fmt.Sprintf("/subscriptions/SUB/resourceGroups/RG/providers/Microsoft.Web/sites/%s", name))
+		}
+	}
+	for _, d := range f.disks {
+		if d == name {
+			return azure.NormalizeID(fmt.Sprintf("/subscriptions/SUB/resourceGroups/RG/providers/Microsoft.Compute/disks/%s", name))
+		}
+	}
+	return ""
 }
 
 func (f *azureFake) actionCalls() []string {

@@ -33,6 +33,16 @@ type Resource struct {
 // for the same resource. Every id is normalised on the way in so the two join.
 func NormalizeID(id string) string { return strings.ToLower(strings.TrimSpace(id)) }
 
+// LastSegment stands in for a name when a resource has no inventory row,
+// because "/subscriptions/…/components/long-gone" is not a name anyone reads.
+// Shared by the server's cost page and the hub's guardrail messages.
+func LastSegment(id string) string {
+	if i := strings.LastIndex(id, "/"); i >= 0 && i+1 < len(id) {
+		return id[i+1:]
+	}
+	return id
+}
+
 // resourceGroupOf pulls the group out of an id, which is more reliable than the
 // generic list's own field and works for the typed passes too.
 func resourceGroupOf(id string) string {

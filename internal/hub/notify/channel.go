@@ -63,6 +63,15 @@ func (c Config) Root() string {
 	return strings.TrimSuffix(c.Public, "/")
 }
 
+// AzureLink builds the Azure page URL, or "" when no public URL is
+// configured: a wrong link is worse than none, same rule as Link and Root.
+func (c Config) AzureLink() string {
+	if c.Public == "" {
+		return ""
+	}
+	return c.Root() + "/azure"
+}
+
 // Validate refuses a configuration at save time rather than at 3 a.m.
 func (c Config) Validate() error {
 	if c.Public != "" {

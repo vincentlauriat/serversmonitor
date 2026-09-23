@@ -118,7 +118,7 @@ func (s *server) handleGetAzure(w http.ResponseWriter, r *http.Request, _ store.
 			continue
 		}
 		amount := c.Amount
-		rows = append(rows, azureRow{ID: c.ResourceID, Name: lastSegment(c.ResourceID),
+		rows = append(rows, azureRow{ID: c.ResourceID, Name: azure.LastSegment(c.ResourceID),
 			Type: typeFromID(c.ResourceID), Group: groupFromID(c.ResourceID),
 			Cost: &amount, Currency: c.Currency, Deleted: true, Tags: map[string]string{}})
 	}
@@ -153,15 +153,6 @@ func (s *server) handleGetAzure(w http.ResponseWriter, r *http.Request, _ store.
 	}
 	writeJSON(w, http.StatusOK, azureView{Mode: cfg.Mode, Period: period, Rows: rows,
 		Totals: totals, Budget: cfg.BudgetMonthly, CostAsOf: costAsOf, Sync: syncs})
-}
-
-// lastSegment stands in for a name when a cost row has no inventory row,
-// because "/subscriptions/…/components/long-gone" is not a name anyone reads.
-func lastSegment(id string) string {
-	if i := strings.LastIndex(id, "/"); i >= 0 && i+1 < len(id) {
-		return id[i+1:]
-	}
-	return id
 }
 
 // typeFromID returns the type in the casing the id carries, which is the

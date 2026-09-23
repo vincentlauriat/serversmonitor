@@ -2,10 +2,12 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/vincentlauriat/serversmonitor/internal/hub/alerts"
+	"github.com/vincentlauriat/serversmonitor/internal/hub/azure"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/notify"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 )
@@ -69,6 +71,47 @@ func (h *Hub) message(cfg notify.Config, e store.AlertEvent, host store.Host) no
 	return m
 }
 
+// notifyGuardrails is journalGuardrails' delivery half: one delivery row per
+// enabled channel per transition, the same shape the alert path uses.
+func (h *Hub) notifyGuardrails(events []store.GuardrailEvent) {
+	chans := *h.channels.Load()
+	if len(chans) == 0 || len(events) == 0 {
+		return
+	}
+	cfg := *h.ncfg.Load()
+	now := time.Now().UTC()
+	names := h.resourceNames()
+	var jobs []notify.Job
+	for _, e := range events {
+		m := guardrailMessage(cfg, e, names[e.Subject])
+		for _, ch := range chans {
+			d, err := h.st.CreateGuardrailDelivery(e.ID, ch.Name(), now)
+			if err != nil {
+				h.log.Error("notify: create guardrail delivery", "err", err)
+				continue
+			}
+			jobs = append(jobs, notify.Job{DeliveryID: d.ID, Channel: ch, Message: m})
+		}
+	}
+	h.dispatch.Enqueue(jobs...)
+}
+
+// guardrailMessage reuses the alert shape: the subject stands where the host
+// name stands, the rule where the metric stands. Channels need no change.
+func guardrailMessage(cfg notify.Config, e store.GuardrailEvent, name string) notify.Message {
+	subject := name
+	if e.Subject == "budget" {
+		subject = "Budget"
+	} else if subject == "" {
+		subject = azure.LastSegment(e.Subject)
+	}
+	metric := e.Rule
+	if e.Detail != "" {
+		metric = e.Rule + " " + e.Detail + "%"
+	}
+	return notify.Message{HostName: subject, Metric: metric, Kind: e.Kind, Value: e.Value, At: e.At, Link: cfg.AzureLink()}
+}
+
 // replayPendingDeliveries picks up what a previous run left unfinished.
 //
 // Delivery is at least once, deliberately. The pending row is written before
@@ -87,6 +130,7 @@ func (h *Hub) replayPendingDeliveries() {
 		byName[c.Name()] = c
 	}
 	cfg := *h.ncfg.Load()
+	names := h.resourceNames()
 	var jobs []notify.Job
 	for _, d := range pending {
 		ch, ok := byName[d.Channel]
@@ -99,10 +143,18 @@ func (h *Hub) replayPendingDeliveries() {
 			continue
 		}
 		e, host, err := h.st.DeliveryEvent(d.ID)
+		if err == nil {
+			jobs = append(jobs, notify.Job{DeliveryID: d.ID, Channel: ch, Message: h.message(cfg, e, host)})
+			continue
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			continue
+		}
+		ge, err := h.st.DeliveryGuardrailEvent(d.ID)
 		if err != nil {
 			continue // the event is gone, and so is its delivery, by cascade
 		}
-		jobs = append(jobs, notify.Job{DeliveryID: d.ID, Channel: ch, Message: h.message(cfg, e, host)})
+		jobs = append(jobs, notify.Job{DeliveryID: d.ID, Channel: ch, Message: guardrailMessage(cfg, ge, names[ge.Subject])})
 	}
 	if len(jobs) > 0 {
 		h.log.Info("replaying deliveries left by a previous run", "count", len(jobs))

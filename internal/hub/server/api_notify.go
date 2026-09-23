@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/vincentlauriat/serversmonitor/internal/hub/azure"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/notify"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 )
@@ -187,12 +188,29 @@ func (s *server) handleDeliveries(w http.ResponseWriter, r *http.Request, _ stor
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	var names map[string]string
 	out := make([]deliveryView, 0, len(ds))
 	for _, d := range ds {
 		v := deliveryView{ID: d.ID, Channel: d.Channel, State: d.State, Attempts: d.Attempts,
 			LastError: d.LastError, At: d.UpdatedAt}
 		if e, host, err := s.Store.DeliveryEvent(d.ID); err == nil {
 			v.Host, v.Metric, v.Kind = host.Name, e.Metric, e.Kind
+		} else if ge, err := s.Store.DeliveryGuardrailEvent(d.ID); err == nil {
+			if names == nil {
+				names = map[string]string{}
+				if rs, err := s.Store.ListAzureResources(); err == nil {
+					for _, r := range rs {
+						names[r.ID] = r.Name
+					}
+				}
+			}
+			host := names[ge.Subject]
+			if ge.Subject == "budget" {
+				host = "Budget"
+			} else if host == "" {
+				host = azure.LastSegment(ge.Subject)
+			}
+			v.Host, v.Metric, v.Kind = host, ge.Rule, ge.Kind
 		}
 		out = append(out, v)
 	}

@@ -29,7 +29,23 @@ func (m Message) Fired() bool { return m.Kind == "fired" }
 
 // ValueText renders the value with the unit its metric is measured in.
 // The implicit status rule has no value worth showing: "offline 1" means nothing.
+//
+// Guardrail metrics carry the rule name in the prefix, with the threshold
+// detail (if any) appended by guardrailMessage — "budget_threshold 80%" still
+// has the "budget_threshold" prefix. resource_share and budget_threshold are
+// already computed as a share of the budget, so they render as a percentage;
+// budget_projection is a projected currency figure with no currency attached
+// here, so it renders as a plain, money-less number. orphan and
+// schedule_failed carry nothing worth showing: the rule name is the message.
 func (m Message) ValueText() string {
+	switch {
+	case m.Metric == "resource_share" || strings.HasPrefix(m.Metric, "budget_threshold"):
+		return fmt.Sprintf("%.0f %%", m.Value)
+	case strings.HasPrefix(m.Metric, "budget_"):
+		return fmt.Sprintf("%.0f", m.Value)
+	case m.Metric == "orphan" || m.Metric == "schedule_failed":
+		return ""
+	}
 	switch m.Metric {
 	case "cpu", "memory", "disk":
 		return fmt.Sprintf("%.1f%%", m.Value)
