@@ -2345,6 +2345,21 @@ git commit -m "feat(guardrails): off windows — parse, evaluate, last boundary,
 
 ### Task 8: Schedules in the hub — boundary crossing, catch-up, failure event
 
+**Symbols landed earlier with no caller — this task wires them.** Tasks 5 and 6
+deliberately shipped two symbols that nothing calls yet, and two separate reviews
+flagged each as unverifiable from its own diff. Both belong to this task. Confirm
+each is genuinely wired here, and say so in the report so the review does not have
+to rediscover the gap:
+
+- `azure.OrphanHubVMSilent` (`internal/hub/azure/orphans.go`) — the reason string
+  for a hub-provisioned VM whose agent has gone quiet.
+- `(*Hub).journalScheduleFailure` (`internal/hub/guardrails_hub.go`) — fires and
+  resolves the `schedule_failed` rule. Note that it must be called from **two**
+  places, not one: `finishAction` when a scheduled action fails after its row
+  exists, and `runSchedules` when no action row is ever created at all (the
+  resource left the inventory, or its type stopped being actionable). The second
+  is the failure most likely to happen in practice and the easiest to forget.
+
 **Files:**
 - Modify: `internal/hub/guardrails_hub.go` (add `applySchedules`, `catchUpSchedules`)
 - Modify: `internal/hub/hub.go` (minute tick calls `applySchedules`; `Run` calls `catchUpSchedules` once after `interruptActions`)
@@ -3279,6 +3294,23 @@ Keep the README's tone: one paragraph per guardrail under a "Cost guardrails" he
 
 Run: `go vet ./... && go test ./... -race && cd web && npm run check && npm test -- --run`
 Expected: all green.
+
+- [ ] **Step 2b: Write the deploy step down, because nothing else in this plan does**
+
+The hub running on `vm-serversmonitor` is on image `a3f1a1c-amd64`, which is at
+**schema version 5**. Migration 6 has only ever been applied to a copy. Nothing in
+tasks 1–12 deploys anything, so the first time migration 6 touches that VM will be
+whenever somebody swaps the image — five schema changes plus a rebuild of the
+`deliveries` table, in one go, on a machine Vincent may by then have created an
+admin account on and pointed at his real subscription.
+
+That must be a decision, not a side effect of a container restart. Add to
+`deploy/azure/proof-lot6.md` a short "Deploying lot 6" section, before the two
+proofs, saying in order: stop the container, copy `serversmonitor.db` off the VM
+first (it is the only copy of the admin account and the alert history), load the
+new image, start it, and check the log line reports `schema=6`. Name the rollback:
+the old image is still in `docker images`, but a database migrated to 6 will not
+open on the old binary, so rolling back means restoring the copy too.
 
 - [ ] **Step 3: Commit and open the PR**
 
