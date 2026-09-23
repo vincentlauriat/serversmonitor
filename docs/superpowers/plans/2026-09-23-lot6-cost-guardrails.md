@@ -749,10 +749,12 @@ func TestValidateRefusesWhatTheSpecRefuses(t *testing.T) {
 }
 
 func TestLocationNeverNil(t *testing.T) {
-	if Settings{Timezone: "Nowhere/Nowhere"}.Location() != time.UTC {
+	// The parentheses are required: Go refuses an unparenthesised composite
+	// literal at the head of an if condition.
+	if (Settings{Timezone: "Nowhere/Nowhere"}).Location() != time.UTC {
 		t.Fatal("unknown zone must fall back to UTC")
 	}
-	if Settings{Timezone: "Europe/Paris"}.Location().String() != "Europe/Paris" {
+	if (Settings{Timezone: "Europe/Paris"}).Location().String() != "Europe/Paris" {
 		t.Fatal("known zone")
 	}
 }
