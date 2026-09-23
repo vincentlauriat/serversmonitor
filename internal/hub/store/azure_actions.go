@@ -21,6 +21,9 @@ type AzureAction struct {
 	Error        string
 	StateBefore  *string
 	StateAfter   *string
+	// Origin is "user" or "schedule". Empty is never written: StartAzureAction
+	// defaults it to "user" before the insert.
+	Origin string
 }
 
 var (
@@ -45,12 +48,17 @@ func (s *Store) ActionableAzureResource(id string) (AzureResource, error) {
 }
 
 // StartAzureAction writes the pending row. The row exists before the call, so a
-// crash mid-flight leaves a trace rather than silence.
+// crash mid-flight leaves a trace rather than silence. Origin defaults to
+// "user": an empty origin is never written, so every row can be read back as
+// one or the other.
 func (s *Store) StartAzureAction(a AzureAction) (int64, error) {
+	if a.Origin == "" {
+		a.Origin = "user"
+	}
 	res, err := s.db.Exec(`INSERT INTO azure_actions
-		(resource_id, resource_name, action, status, requested_at, state_before)
-		VALUES (?,?,?,'pending',?,?)`,
-		a.ResourceID, a.ResourceName, a.Action, fmtTime(a.RequestedAt), nullString(a.StateBefore))
+		(resource_id, resource_name, action, status, requested_at, state_before, origin)
+		VALUES (?,?,?,'pending',?,?,?)`,
+		a.ResourceID, a.ResourceName, a.Action, fmtTime(a.RequestedAt), nullString(a.StateBefore), a.Origin)
 	if err != nil {
 		// Read the driver's code, never the English in its message: the partial
 		// unique index is what refuses a second action on the same resource.
@@ -104,7 +112,7 @@ func (s *Store) ListAzureActions(limit int) ([]AzureAction, error) {
 		limit = 20
 	}
 	rows, err := s.db.Query(`SELECT id, resource_id, resource_name, action, status,
-		requested_at, finished_at, error, state_before, state_after
+		requested_at, finished_at, error, state_before, state_after, origin
 		FROM azure_actions ORDER BY requested_at DESC, id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -116,7 +124,7 @@ func (s *Store) ListAzureActions(limit int) ([]AzureAction, error) {
 		var requested string
 		var finished, before, after sql.NullString
 		if err := rows.Scan(&a.ID, &a.ResourceID, &a.ResourceName, &a.Action, &a.Status,
-			&requested, &finished, &a.Error, &before, &after); err != nil {
+			&requested, &finished, &a.Error, &before, &after, &a.Origin); err != nil {
 			return nil, err
 		}
 		if a.RequestedAt, err = parseTime(requested); err != nil {

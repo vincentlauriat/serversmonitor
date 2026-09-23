@@ -23,13 +23,35 @@ type Message struct {
 	Duration  time.Duration
 	At        time.Time
 	Link      string // "" when no public URL is configured
+
+	// Guardrail marks a message built by guardrailMessage rather than from a
+	// host alert. Title() and Body() need this explicitly: ValueText() == ""
+	// is not a safe discriminator between the two, since the implicit status
+	// rule (host offline/online) also has an empty ValueText.
+	Guardrail bool
 }
 
 func (m Message) Fired() bool { return m.Kind == "fired" }
 
 // ValueText renders the value with the unit its metric is measured in.
 // The implicit status rule has no value worth showing: "offline 1" means nothing.
+//
+// Guardrail metrics carry the rule name in the prefix, with the threshold
+// detail (if any) appended by guardrailMessage — "budget_threshold 80%" still
+// has the "budget_threshold" prefix. resource_share and budget_threshold are
+// already computed as a share of the budget, so they render as a percentage;
+// budget_projection is a projected currency figure with no currency attached
+// here, so it renders as a plain, money-less number. orphan and
+// schedule_failed carry nothing worth showing: the rule name is the message.
 func (m Message) ValueText() string {
+	switch {
+	case m.Metric == "resource_share" || strings.HasPrefix(m.Metric, "budget_threshold"):
+		return fmt.Sprintf("%.0f %%", m.Value)
+	case strings.HasPrefix(m.Metric, "budget_"):
+		return fmt.Sprintf("%.0f", m.Value)
+	case m.Metric == "orphan" || m.Metric == "schedule_failed":
+		return ""
+	}
 	switch m.Metric {
 	case "cpu", "memory", "disk":
 		return fmt.Sprintf("%.1f%%", m.Value)
@@ -50,6 +72,14 @@ func (m Message) Title() string {
 		}
 		return m.HostName + " is back online"
 	}
+	if m.Guardrail {
+		if v := m.ValueText(); v != "" {
+			return fmt.Sprintf("%s %s %s (%s)", m.HostName, m.Metric, v, m.Kind)
+		}
+		// orphan and schedule_failed have no value: a trailing ValueText()
+		// would leave a double space between the metric and the "(kind)".
+		return fmt.Sprintf("%s %s (%s)", m.HostName, m.Metric, m.Kind)
+	}
 	return fmt.Sprintf("%s %s %s (%s)", m.HostName, m.Metric, m.ValueText(), m.Kind)
 }
 
@@ -59,6 +89,20 @@ func (m Message) Body() string {
 	var b strings.Builder
 	b.WriteString(m.Title())
 	b.WriteString("\n\n")
+	if m.Guardrail {
+		// A guardrail's subject is a budget or an Azure resource, never a
+		// host, and it has no threshold/duration rule to restate: the metric
+		// already names the rule in the title above.
+		fmt.Fprintf(&b, "Subject: %s\n", m.HostName)
+		if v := m.ValueText(); v != "" {
+			fmt.Fprintf(&b, "Value:   %s\n", v)
+		}
+		fmt.Fprintf(&b, "Time:    %s\n", m.At.UTC().Format("2006-01-02 15:04:05 UTC"))
+		if m.Link != "" {
+			fmt.Fprintf(&b, "\n%s\n", m.Link)
+		}
+		return b.String()
+	}
 	fmt.Fprintf(&b, "Host:   %s\n", m.HostName)
 	if v := m.ValueText(); v != "" {
 		fmt.Fprintf(&b, "Value:  %s\n", v)

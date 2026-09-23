@@ -140,12 +140,24 @@ func TestPurgeKeepsPendingWhateverItsAge(t *testing.T) {
 }
 
 func TestDeliveriesReferenceTheirEvent(t *testing.T) {
+	// deliveries now points at either journal (see guardrails_test.go for the
+	// CHECK that only one of the two is ever set), so it carries two foreign
+	// keys instead of one.
 	s := openTest(t)
-	var ref string
-	if err := s.db.QueryRow(`SELECT "table" FROM pragma_foreign_key_list('deliveries')`).Scan(&ref); err != nil {
+	rows, err := s.db.Query(`SELECT "table" FROM pragma_foreign_key_list('deliveries')`)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if ref != "alert_events" {
-		t.Fatalf("deliveries must reference alert_events, got %q", ref)
+	defer rows.Close()
+	refs := map[string]bool{}
+	for rows.Next() {
+		var ref string
+		if err := rows.Scan(&ref); err != nil {
+			t.Fatal(err)
+		}
+		refs[ref] = true
+	}
+	if len(refs) != 2 || !refs["alert_events"] || !refs["azure_guardrail_events"] {
+		t.Fatalf("deliveries must reference alert_events and azure_guardrail_events, got %v", refs)
 	}
 }

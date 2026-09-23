@@ -3,6 +3,7 @@ package azure
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -20,6 +21,57 @@ type Deletable struct {
 // makes a mistyped id harmless.
 var ErrNotOurs = fmt.Errorf("azure: refusing to delete a resource that is not tagged %s=%s",
 	CreatedByTag, CreatedByValue)
+
+// ErrUndeletableKind refuses a kind the hub's role cannot delete. The hub's
+// managed identity holds Reader, Website Contributor and Virtual Machine
+// Contributor on the resource group — none of which deletes a public IP
+// address. Refusing here, before the call, turns Azure's bare 403 into a
+// sentence a person can act on.
+var ErrUndeletableKind = errors.New("azure: the hub's role cannot delete this kind of resource")
+
+// KindOf maps a resource type to the short kind the delete path speaks. The
+// boolean says whether the three roles the hub holds can delete it: Virtual
+// Machine Contributor deletes VMs, NICs and disks; Website Contributor
+// deletes plans; nobody the hub is deletes a public IP.
+func KindOf(resourceType string) (string, bool) {
+	switch strings.ToLower(resourceType) {
+	case "microsoft.compute/virtualmachines":
+		return "vm", true
+	case "microsoft.network/networkinterfaces":
+		return "nic", true
+	case "microsoft.compute/disks":
+		return "disk", true
+	case "microsoft.web/serverfarms":
+		return "plan", true
+	case "microsoft.network/publicipaddresses":
+		return "ip", false
+	}
+	return "", false
+}
+
+// DeleteAny deletes one resource of a deletable kind, with no ownership
+// check: an orphan is by definition something nobody is using, whoever
+// created it, and the name the person typed back is the consent. A kind the
+// role cannot delete is refused before any call, never let through to Azure
+// only to come back as a bare 403. A 404 counts as deleted: the second press
+// of a Delete button must not report a failure.
+func DeleteAny(ctx context.Context, c *Client, armID, kind string) error {
+	if kind == "ip" || kind == "" {
+		return fmt.Errorf("%w: %s", ErrUndeletableKind, armID)
+	}
+	version, err := apiVersionFor(kind)
+	if err != nil {
+		return err
+	}
+	resp, err := c.DeleteAsync(ctx, armID, url.Values{"api-version": {version}})
+	if err != nil {
+		if StatusOf(err) == http.StatusNotFound {
+			return nil
+		}
+		return err
+	}
+	return Await(ctx, c, resp)
+}
 
 // deleteOrder is not a preference. Azure refuses to delete a NIC that is still
 // attached to a VM, so the VM goes first. The OS disk does not appear because
@@ -112,6 +164,10 @@ func apiVersionFor(kind string) (string, error) {
 		return computeAPIVersion, nil
 	case "nic":
 		return networkAPIVersion, nil
+	case "disk":
+		return diskAPIVersion, nil
+	case "plan":
+		return webAPIVersion, nil
 	}
 	return "", fmt.Errorf("azure: nothing known about a resource of kind %q", kind)
 }

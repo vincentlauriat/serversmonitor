@@ -27,6 +27,19 @@ type azureFake struct {
 	calls     int
 	failAfter int
 	sites     []string
+	// Lot 6: unattached disks the catalogue lists, whose typed read the
+	// orphan sweep follows; diskReadStatus makes that typed read fail
+	// without touching the catalogue pass. costs, when set, replaces the
+	// hardcoded cost query rows with one row per name, keyed the same way.
+	disks          []string
+	diskReadStatus int
+	costs          map[string]float64
+	// Lot 6 task 9: public IPs the catalogue lists, for the orphan-deletion
+	// path that must refuse them before any call. deletes records every
+	// DELETE the fake saw, by path; a delete of a disk also removes it from
+	// disks, so a following sweep no longer lists it.
+	ips     []string
+	deletes []string
 	// Lot 4: what the fake did with actions, and what it answers.
 	actions      []string
 	actionStatus int    // 0 = succeed
@@ -56,6 +69,27 @@ func newAzureFake(t *testing.T, sites ...string) *azureFake {
 		switch {
 		case strings.Contains(r.URL.Path, "/oauth2/"):
 			io.WriteString(w, `{"token_type":"Bearer","expires_in":3599,"access_token":"tok"}`)
+		// A DELETE, checked ahead of the path-only cases below so it is never
+		// mistaken for a typed orphan read on the same resource. Recorded
+		// whatever the kind; a disk that is gone is also dropped from
+		// f.disks, so the next catalogue pass no longer lists it.
+		case r.Method == http.MethodDelete:
+			f.mu.Lock()
+			f.deletes = append(f.deletes, r.URL.Path)
+			name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			kept := f.disks[:0]
+			for _, d := range f.disks {
+				if d != name {
+					kept = append(kept, d)
+				}
+			}
+			f.disks = kept
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		// The typed orphan read on one public IP: GET …/publicIPAddresses/<name>.
+		// No ipConfiguration, matching the orphan detector's own shape.
+		case strings.Contains(r.URL.Path, "/Microsoft.Network/publicIPAddresses/"):
+			io.WriteString(w, `{"properties":{}}`)
 		case strings.HasSuffix(r.URL.Path, "/resources"):
 			if f.hold != nil {
 				<-f.hold
@@ -65,7 +99,28 @@ func newAzureFake(t *testing.T, sites ...string) *azureFake {
 				parts = append(parts, fmt.Sprintf(
 					`{"id":"/subscriptions/SUB/resourceGroups/RG/providers/Microsoft.Web/sites/%s","name":%q,"type":"Microsoft.Web/sites","location":"westeurope","properties":null}`, s, s))
 			}
+			for _, d := range f.disks {
+				parts = append(parts, fmt.Sprintf(
+					`{"id":"/subscriptions/SUB/resourceGroups/RG/providers/Microsoft.Compute/disks/%s","name":%q,"type":"Microsoft.Compute/disks","location":"westeurope","properties":null}`, d, d))
+			}
+			for _, ip := range f.ips {
+				parts = append(parts, fmt.Sprintf(
+					`{"id":"/subscriptions/SUB/resourceGroups/RG/providers/Microsoft.Network/publicIPAddresses/%s","name":%q,"type":"Microsoft.Network/publicIPAddresses","location":"westeurope","properties":null}`, ip, ip))
+			}
 			fmt.Fprintf(w, `{"value":[%s]}`, strings.Join(parts, ","))
+		// The typed orphan read on one disk: GET …/disks/<name>. diskReadStatus
+		// fails it without touching the catalogue pass above, so a test can
+		// prove the inventory stays green while the orphan scope alone fails.
+		case strings.Contains(r.URL.Path, "/Microsoft.Compute/disks/"):
+			f.mu.Lock()
+			code := f.diskReadStatus
+			f.mu.Unlock()
+			if code != 0 {
+				w.WriteHeader(code)
+				io.WriteString(w, `{"error":{"code":"InternalServerError","message":"disk read failed"}}`)
+				return
+			}
+			io.WriteString(w, `{"properties":{"diskState":"Unattached"}}`)
 		// An action: POST …/sites/<name>/{start,stop,restart}.
 		case r.Method == http.MethodPost && isActionPath(r.URL.Path):
 			f.mu.Lock()
@@ -110,6 +165,18 @@ func newAzureFake(t *testing.T, sites ...string) *azureFake {
 		// character before CostManagement is a dot, not a slash. Matching
 		// "/CostManagement/query" answers 404 and the sync reads as broken.
 		case strings.Contains(r.URL.Path, "CostManagement/query"):
+			f.mu.Lock()
+			costs := f.costs
+			f.mu.Unlock()
+			if len(costs) > 0 {
+				var rows []string
+				for name, amount := range costs {
+					rows = append(rows, fmt.Sprintf(`[%v,%q,"EUR"]`, amount, f.id(name)))
+				}
+				fmt.Fprintf(w, `{"properties":{"columns":[{"name":"Cost"},{"name":"ResourceId"},{"name":"Currency"}],"rows":[%s]}}`,
+					strings.Join(rows, ","))
+				return
+			}
 			io.WriteString(w, `{"properties":{"columns":[{"name":"Cost"},{"name":"ResourceId"},{"name":"Currency"}],
 			 "rows":[[3.5,"/subscriptions/SUB/resourceGroups/RG/providers/Microsoft.Web/sites/a","EUR"],
 			         [9.0,"/subscriptions/sub/resourcegroups/rg/providers/microsoft.insights/components/long-gone","EUR"]]}}`)
@@ -130,10 +197,53 @@ func isActionPath(p string) bool {
 	return false
 }
 
+// id returns the lowercased ARM id this fake serves for a site or a disk
+// name, matching what NormalizeID gives the resource row stored for it.
+func (f *azureFake) id(name string) string {
+	for _, s := range f.sites {
+		if s == name {
+			return azure.NormalizeID(fmt.Sprintf("/subscriptions/SUB/resourceGroups/RG/providers/Microsoft.Web/sites/%s", name))
+		}
+	}
+	for _, d := range f.disks {
+		if d == name {
+			return azure.NormalizeID(fmt.Sprintf("/subscriptions/SUB/resourceGroups/RG/providers/Microsoft.Compute/disks/%s", name))
+		}
+	}
+	for _, ip := range f.ips {
+		if ip == name {
+			return azure.NormalizeID(fmt.Sprintf("/subscriptions/SUB/resourceGroups/RG/providers/Microsoft.Network/publicIPAddresses/%s", name))
+		}
+	}
+	return ""
+}
+
 func (f *azureFake) actionCalls() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.actions...)
+}
+
+// waitActions waits until the fake has seen at least n action posts. The
+// fake records a call as soon as the POST arrives, before any holdAction
+// gate or the configured status, so this observes "the hub issued the
+// call," not "the call finished."
+func (f *azureFake) waitActions(t *testing.T, n int) {
+	t.Helper()
+	waitFor(t, func() bool { return len(f.actionCalls()) >= n }, fmt.Sprintf("expected %d action call(s)", n))
+}
+
+// waitDeletes waits until the fake has seen at least n DELETE calls.
+// DeleteOrphan runs synchronously, so this mostly guards against a caller
+// forgetting that fact — but it costs nothing to be honest about what it
+// waits for rather than assuming the call already landed.
+func (f *azureFake) waitDeletes(t *testing.T, n int) {
+	t.Helper()
+	waitFor(t, func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return len(f.deletes) >= n
+	}, fmt.Sprintf("expected %d delete(s)", n))
 }
 
 // failsFrom makes every call after the nth fail, counting from now.

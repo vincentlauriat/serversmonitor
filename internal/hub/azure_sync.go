@@ -137,6 +137,20 @@ func (h *Hub) syncAzureInventory(ctx context.Context) {
 		return
 	}
 	h.recordAzureSync("inventory", true, "", started)
+
+	// The orphan sweep is its own scope. It runs after the inventory is
+	// stored, because it needs nothing from the store, and a read that fails
+	// must not make the inventory look stale: the catalogue and enrichment
+	// passes succeeded, and the page's banner would be lying.
+	started = time.Now().UTC()
+	reasons, err := h.evaluateOrphans(ctx, client, rs)
+	if err != nil {
+		h.log.Warn("azure orphan sweep failed", "err", err)
+		h.recordAzureSync("orphans", false, err.Error(), started)
+		return
+	}
+	h.recordAzureSync("orphans", true, "", started)
+	h.journalOrphans(reasons)
 }
 
 func (h *Hub) syncAzureCosts(ctx context.Context) {
@@ -166,6 +180,7 @@ func (h *Hub) syncAzureCosts(ctx context.Context) {
 		return
 	}
 	h.recordAzureSync("cost", true, "", started)
+	h.evaluateBudget()
 }
 
 // recordAzureSync writes the outcome and tells the open pages about it —

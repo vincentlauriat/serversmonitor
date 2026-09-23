@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/vincentlauriat/serversmonitor/internal/hub/azure"
+	"github.com/vincentlauriat/serversmonitor/internal/hub/guardrails"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 )
 
@@ -29,6 +30,30 @@ type fakeAzurer struct {
 	deleteName   string
 	deleteID     int64
 	deleteErr    error
+
+	// Lot 6.
+	settings         guardrails.Settings
+	orphanDeleted    int
+	orphanDeleteID   string
+	orphanDeleteName string
+	orphanDeleteErr  error
+}
+
+// GuardrailSettings returns DefaultSettings() unless a test has overridden
+// settings: no test in this package exercises the /guardrails view against a
+// saved setting, so there is nothing to gain from wiring this fake to the
+// rig's real store the way the hub's own GuardrailSettings does.
+func (f *fakeAzurer) GuardrailSettings() guardrails.Settings {
+	if len(f.settings.Thresholds) == 0 {
+		return guardrails.DefaultSettings()
+	}
+	return f.settings
+}
+
+func (f *fakeAzurer) DeleteOrphan(resourceID, confirmName string) error {
+	f.orphanDeleted++
+	f.orphanDeleteID, f.orphanDeleteName = resourceID, confirmName
+	return f.orphanDeleteErr
 }
 
 func (f *fakeAzurer) StartProvision(name string) (int64, error) {
@@ -569,6 +594,7 @@ func TestTheActionLogIsReadable(t *testing.T) {
 			Status string `json:"status"`
 			Error  string `json:"error"`
 			Name   string `json:"resource_name"`
+			Origin string `json:"origin"`
 		} `json:"actions"`
 	}
 	json.Unmarshal(body, &out)
@@ -577,6 +603,11 @@ func TestTheActionLogIsReadable(t *testing.T) {
 	}
 	if out.Actions[0].Status != "failed" || !strings.Contains(out.Actions[0].Error, "Website Contributor") {
 		t.Fatalf("the log must carry Azure's own words: %+v", out.Actions[0])
+	}
+	// StartAzureAction defaults an empty origin to "user": a manual action
+	// must read as one, not as a schedule's.
+	if out.Actions[0].Origin != "user" {
+		t.Fatalf("origin = %q, want user", out.Actions[0].Origin)
 	}
 }
 

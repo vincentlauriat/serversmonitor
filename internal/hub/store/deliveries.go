@@ -6,31 +6,40 @@ import (
 	"time"
 )
 
-// Delivery is one attempt to tell someone about one alert transition, through
-// one channel. The row exists before the first attempt, which is what makes the
-// queue survive a restart.
+// Delivery is one attempt to tell someone about one transition, through one
+// channel — an alert transition or a guardrail transition, never both, which
+// is what the CHECK constraint on the table enforces. The row exists before
+// the first attempt, which is what makes the queue survive a restart.
 type Delivery struct {
-	ID        int64
-	EventID   int64
-	Channel   string
-	State     string
-	Attempts  int
-	LastError string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID               int64
+	EventID          *int64
+	GuardrailEventID *int64
+	Channel          string
+	State            string
+	Attempts         int
+	LastError        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
-const deliveryCols = `id, event_id, channel, state, attempts, last_error, created_at, updated_at`
+const deliveryCols = `id, event_id, guardrail_event_id, channel, state, attempts, last_error, created_at, updated_at`
 
 func scanDelivery(row scanner) (Delivery, error) {
 	var d Delivery
+	var eventID, guardrailEventID sql.NullInt64
 	var created, updated string
-	err := row.Scan(&d.ID, &d.EventID, &d.Channel, &d.State, &d.Attempts, &d.LastError, &created, &updated)
+	err := row.Scan(&d.ID, &eventID, &guardrailEventID, &d.Channel, &d.State, &d.Attempts, &d.LastError, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return d, ErrNotFound
 	}
 	if err != nil {
 		return d, err
+	}
+	if eventID.Valid {
+		d.EventID = &eventID.Int64
+	}
+	if guardrailEventID.Valid {
+		d.GuardrailEventID = &guardrailEventID.Int64
 	}
 	if d.CreatedAt, err = parseTime(created); err != nil {
 		return d, err
@@ -93,17 +102,19 @@ func (s *Store) ListDeliveries(limit int) ([]Delivery, error) {
 	return s.queryDeliveries(`SELECT `+deliveryCols+` FROM deliveries ORDER BY id DESC LIMIT ?`, limit)
 }
 
-// DeliveryEvent returns what a delivery is about: its event, and that event's host.
+// DeliveryEvent returns what a delivery is about: its event, and that event's
+// host. A delivery about a guardrail transition, not an alert, answers
+// ErrNotFound here — the caller must ask DeliveryGuardrailEvent instead.
 func (s *Store) DeliveryEvent(id int64) (AlertEvent, Host, error) {
-	var eventID int64
+	var eventID sql.NullInt64
 	err := s.db.QueryRow(`SELECT event_id FROM deliveries WHERE id = ?`, id).Scan(&eventID)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !eventID.Valid) {
 		return AlertEvent{}, Host{}, ErrNotFound
 	}
 	if err != nil {
 		return AlertEvent{}, Host{}, err
 	}
-	e, err := scanEvent(s.db.QueryRow(`SELECT id, rule_id, host_id, metric, kind, value, at FROM alert_events WHERE id = ?`, eventID))
+	e, err := scanEvent(s.db.QueryRow(`SELECT id, rule_id, host_id, metric, kind, value, at FROM alert_events WHERE id = ?`, eventID.Int64))
 	if errors.Is(err, sql.ErrNoRows) {
 		return AlertEvent{}, Host{}, ErrNotFound
 	}

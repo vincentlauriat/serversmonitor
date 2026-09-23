@@ -27,6 +27,11 @@ type AzureResource struct {
 	FirstSeen         time.Time
 	LastSeen          time.Time
 	DeletedAt         *time.Time
+	// OrphanReason and OrphanSince are written only by SetAzureOrphans, never
+	// by ReplaceAzureInventory: a sweep must not overwrite what the last
+	// orphan pass decided.
+	OrphanReason string
+	OrphanSince  *time.Time
 }
 
 // AzureCost is one resource's spend over one month. It carries no foreign key:
@@ -106,7 +111,7 @@ func (s *Store) ReplaceAzureInventory(groups []string, rs []AzureResource, now t
 }
 
 const azureResourceCols = `id, arm_id, name, type, resource_group, location, kind, sku, state,
-	provisioning_state, host, tags, first_seen, last_seen, deleted_at`
+	provisioning_state, host, tags, first_seen, last_seen, deleted_at, orphan_reason, orphan_since`
 
 func (s *Store) ListAzureResources() ([]AzureResource, error) {
 	rows, err := s.db.Query(`SELECT ` + azureResourceCols + ` FROM azure_resources ORDER BY resource_group, name`)
@@ -117,10 +122,10 @@ func (s *Store) ListAzureResources() ([]AzureResource, error) {
 	var out []AzureResource
 	for rows.Next() {
 		var r AzureResource
-		var state, deleted sql.NullString
+		var state, deleted, since sql.NullString
 		var tags, first, last string
 		if err := rows.Scan(&r.ID, &r.ARMID, &r.Name, &r.Type, &r.ResourceGroup, &r.Location, &r.Kind, &r.SKU,
-			&state, &r.ProvisioningState, &r.Host, &tags, &first, &last, &deleted); err != nil {
+			&state, &r.ProvisioningState, &r.Host, &tags, &first, &last, &deleted, &r.OrphanReason, &since); err != nil {
 			return nil, err
 		}
 		if state.Valid {
@@ -134,6 +139,9 @@ func (s *Store) ListAzureResources() ([]AzureResource, error) {
 			}
 			r.DeletedAt = &t
 		}
+		if r.OrphanSince, err = parseNullTime(since); err != nil {
+			return nil, err
+		}
 		if r.FirstSeen, err = parseTime(first); err != nil {
 			return nil, err
 		}
@@ -145,6 +153,64 @@ func (s *Store) ListAzureResources() ([]AzureResource, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// SetAzureOrphans rewrites orphan_reason/orphan_since for every live resource
+// after a sweep, from a fresh map: an id absent from reasons is cleared. One
+// transaction, so a half-applied sweep never shows yesterday's orphans beside
+// today's.
+//
+// orphan_since is kept when the reason for an id did not change, and set to
+// now otherwise (first detection, or a different reason). The previous
+// (reason, since) pairs are read before anything is cleared — reading them
+// through a subquery after the clear would already see the cleared row.
+func (s *Store) SetAzureOrphans(reasons map[string]string, now time.Time) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	type prev struct {
+		reason string
+		since  string
+	}
+	before := map[string]prev{}
+	rows, err := tx.Query(`SELECT id, orphan_reason, orphan_since FROM azure_resources WHERE orphan_reason <> ''`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id, reason string
+		var since sql.NullString
+		if err := rows.Scan(&id, &reason, &since); err != nil {
+			rows.Close()
+			return err
+		}
+		before[id] = prev{reason: reason, since: since.String}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	if _, err := tx.Exec(`UPDATE azure_resources SET orphan_reason = '', orphan_since = NULL WHERE deleted_at IS NULL`); err != nil {
+		return err
+	}
+
+	ts := fmtTime(now)
+	for id, reason := range reasons {
+		since := ts
+		if p, ok := before[id]; ok && p.reason == reason && p.since != "" {
+			since = p.since
+		}
+		if _, err := tx.Exec(`UPDATE azure_resources SET orphan_reason = ?, orphan_since = ? WHERE id = ?`,
+			reason, since, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) UpsertAzureCosts(cs []AzureCost) error {

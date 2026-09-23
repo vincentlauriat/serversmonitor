@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	_ "time/tzdata" // the runtime image is FROM scratch and has no zone database
 
 	"github.com/vincentlauriat/serversmonitor/internal/hub"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/config"

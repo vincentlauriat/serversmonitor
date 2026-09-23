@@ -148,6 +148,7 @@ describe('actions', () => {
     error: '',
     state_before: null,
     state_after: null,
+    origin: 'user',
     ...o
   });
 

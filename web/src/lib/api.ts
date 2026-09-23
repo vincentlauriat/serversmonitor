@@ -189,6 +189,81 @@ export interface AzureView {
   cost_as_of: string | null;
   sync: Record<string, AzureSync>;
 }
+/** One off-window in a resource's local wall clock. Mirrors
+ * guardrails.Window on the Go side field for field, including the ISO day
+ * numbering (1 = Monday … 7 = Sunday) and the `to <= from` midnight-crossing
+ * convention. */
+export interface Window {
+  days: number[];
+  from: string;
+  to: string;
+}
+export interface GuardrailThreshold {
+  pct: number;
+  line: number;
+  firing: boolean;
+}
+export interface GuardrailShare {
+  resource_id: string;
+  name: string;
+  amount: number;
+  share_pct: number;
+  firing: boolean;
+}
+export interface GuardrailOrphan {
+  resource_id: string;
+  name: string;
+  type: string;
+  reason: string;
+  /** null when the resource has no orphan_since on record yet. */
+  since: string | null;
+  /** null when Azure has never billed this resource — never a 0. */
+  cost: number | null;
+  currency?: string;
+  deletable: boolean;
+}
+export interface GuardrailEvent {
+  subject: string;
+  /** "" for the "budget" subject. */
+  name: string;
+  rule: string;
+  detail: string;
+  kind: 'fired' | 'resolved';
+  value: number;
+  at: string;
+}
+export interface GuardrailsView {
+  budget: number;
+  spent: number;
+  currencies: string[];
+  /** null before day 4 of billed data, and whenever there is no cost data. */
+  projection: number | null;
+  /** Read from the guardrail journal's last budget_projection event, not
+   * recomputed client-side — that rule has its own 5% hysteresis band
+   * server-side, which only the journal actually tracks. */
+  projection_firing: boolean;
+  days_billed: number;
+  thresholds: GuardrailThreshold[];
+  shares: GuardrailShare[];
+  orphans: GuardrailOrphan[];
+  events: GuardrailEvent[];
+  timezone: string;
+}
+export interface GuardrailSettings {
+  thresholds: number[];
+  resource_share_pct: number;
+  hub_vm_silent_days: number;
+  timezone: string;
+}
+export interface Schedule {
+  resource_id: string;
+  name: string;
+  off_windows: Window[];
+  enabled: boolean;
+  last_boundary: string | null;
+  off_now: boolean;
+}
+
 export interface AzureSettings {
   mode: string;
   tenant_id: string;

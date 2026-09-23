@@ -4,6 +4,7 @@
     api,
     type AzureSettings,
     type Delivery,
+    type GuardrailSettings,
     type Host,
     type Notifications,
     type Rule,
@@ -11,6 +12,7 @@
   } from '$lib/api';
   import { healthLabel, parseHeaders, parseRecipients, toPayload } from '$lib/notify';
   import { parseGroups, toSettingsPayload } from '$lib/azure';
+  import { parseThresholds } from '$lib/guardrails';
   import Modal from '$lib/components/Modal.svelte';
 
   type Tab = 'hosts' | 'alerts' | 'notifications' | 'azure' | 'system';
@@ -37,6 +39,9 @@
   let clientSecret = $state<string | null>(null); // null = untouched
   let groupsText = $state('');
 
+  let gr = $state<GuardrailSettings | null>(null);
+  let grThresholdsText = $state('');
+
   let showToken = $state(false);
   let tokenTitle = $state('');
   let install = $state('');
@@ -54,13 +59,14 @@
   ];
 
   async function load() {
-    const [h, a, s, n, d, z] = await Promise.all([
+    const [h, a, s, n, d, z, g] = await Promise.all([
       api.get<Host[]>('/api/v1/hosts'),
       api.get<{ rules: Rule[] }>('/api/v1/alerts'),
       api.get<Settings>('/api/v1/settings'),
       api.get<Notifications>('/api/v1/notifications'),
       api.get<Delivery[]>('/api/v1/notifications/deliveries'),
-      api.get<AzureSettings>('/api/v1/azure/settings')
+      api.get<AzureSettings>('/api/v1/azure/settings'),
+      api.get<GuardrailSettings>('/api/v1/azure/guardrails/settings')
     ]);
     hosts = h;
     rules = a.rules;
@@ -73,6 +79,8 @@
     deliveries = d;
     az = z;
     groupsText = z.resource_groups.join('\n');
+    gr = g;
+    grThresholdsText = g.thresholds.join(', ');
   }
 
   onMount(() => {
@@ -175,6 +183,12 @@
       clientSecret = null;
       az = await api.get<AzureSettings>('/api/v1/azure/settings');
     }, 'Azure settings saved.');
+
+  const saveGuardrails = () =>
+    run(async () => {
+      const thresholds = parseThresholds(grThresholdsText);
+      await api.put('/api/v1/azure/guardrails/settings', { ...gr!, thresholds });
+    }, 'Guardrail settings saved.');
 
   async function testAzure() {
     testing = 'azure';
@@ -609,6 +623,45 @@
         >
       </div>
     </form>
+
+    {#if gr}
+      <form class="mt-6 space-y-3 text-sm" onsubmit={(e) => { e.preventDefault(); saveGuardrails(); }}>
+        <div class={box}>
+          <h3 class="mb-2 text-sm font-semibold">Guardrails</h3>
+          <p class="mb-3 text-xs text-zinc-500">
+            The budget bar, orphan detection and off-hours schedules on the Azure page all read these four
+            settings. None of them needs a new role: everything runs on the credential above.
+          </p>
+          <div class="grid max-w-2xl gap-3 sm:grid-cols-2">
+            <label class="block sm:col-span-2">
+              Budget thresholds, %, comma-separated
+              <input class={inp} bind:value={grThresholdsText} placeholder="80, 100" />
+              <span class="text-xs text-zinc-500">Each one fires once, the month the spend crosses it.</span>
+            </label>
+            <label class="block">
+              Per-resource share of the budget, %
+              <input class={inp} type="number" min="1" max="100" bind:value={gr.resource_share_pct} />
+            </label>
+            <label class="block">
+              Silent hub VM, days
+              <input class={inp} type="number" min="1" bind:value={gr.hub_vm_silent_days} />
+              <span class="text-xs text-zinc-500">
+                A VM the hub created whose agent has gone quiet this long is listed as an orphan.
+              </span>
+            </label>
+            <label class="block sm:col-span-2">
+              Time zone
+              <input class={inp} bind:value={gr.timezone} placeholder="Europe/Paris" />
+              <span class="text-xs text-zinc-500">
+                One zone for every schedule window on this hub (design decision, not a per-resource setting). An
+                unknown IANA name is refused at save, naming the value it did not recognise.
+              </span>
+            </label>
+          </div>
+        </div>
+        <button class="rounded bg-zinc-900 px-3 py-1.5 text-white dark:bg-zinc-100 dark:text-zinc-900">Save</button>
+      </form>
+    {/if}
   {/if}
 {:else}
   <form class="max-w-md space-y-3 text-sm" onsubmit={(e) => { e.preventDefault(); saveSettings(); }}>
