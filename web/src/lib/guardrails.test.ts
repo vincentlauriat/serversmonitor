@@ -4,6 +4,7 @@ import type { GuardrailOrphan, GuardrailsView, Window } from './api';
 import {
   budgetFiring,
   canDeleteOrphan,
+  editableWindows,
   eveningsAndWeekends,
   isAlwaysOff,
   orphanLabel,
@@ -22,6 +23,7 @@ const view = (over: Partial<GuardrailsView>): GuardrailsView => ({
   spent: 40,
   currencies: ['EUR'],
   projection: null,
+  projection_firing: false,
   days_billed: 10,
   thresholds: [],
   shares: [],
@@ -101,6 +103,42 @@ describe('isAlwaysOff', () => {
     expect(isAlwaysOff(eveningsAndWeekends())).toBe(false);
     expect(isAlwaysOff([{ days: [1, 2, 3, 4, 5, 6, 7], from: '00:00', to: '23:59' }])).toBe(false);
   });
+
+  it('reads the editor-safe "00:00" end-of-day spelling the same as "24:00"', () => {
+    expect(isAlwaysOff([{ days: [1, 2, 3, 4, 5, 6, 7], from: '00:00', to: '00:00' }])).toBe(true);
+  });
+});
+
+describe('editableWindows', () => {
+  it('turns "24:00" into "00:00", the only end-of-day spelling a native time input can display', () => {
+    const ws: Window[] = [{ days: [6, 7], from: '00:00', to: '24:00' }];
+    expect(editableWindows(ws)).toEqual([{ days: [6, 7], from: '00:00', to: '00:00' }]);
+  });
+
+  it('leaves every other window untouched', () => {
+    const ws: Window[] = [{ days: [1, 3], from: '20:00', to: '07:00' }];
+    expect(editableWindows(ws)).toEqual(ws);
+  });
+
+  it("is what the evenings-and-weekends preset already returns, so it never renders a blank field", () => {
+    // The preset mirrors guardrails.EveningsAndWeekends's own "24:00"
+    // literal internally (see eveningsAndWeekends's own doc comment), but
+    // must come out the other side already normalized — this is the
+    // regression the flagship preset hit in review.
+    expect(eveningsAndWeekends()).toEqual(editableWindows(eveningsAndWeekends()));
+    expect(eveningsAndWeekends().some((w) => w.to === '24:00')).toBe(false);
+  });
+
+  it('round-trips a midnight-ending window through save-and-reload without losing the always-off meaning', () => {
+    // Simulates what the page does: normalize on load (editableWindows),
+    // send exactly that to the server (which stores "00:00" verbatim, since
+    // ParseWindows/EncodeWindows round-trip whatever it's given), then load
+    // it again — the window must still read as always-off both times.
+    const saved = eveningsAndWeekends();
+    const reloaded = editableWindows(saved); // a second load, same as the first
+    expect(reloaded).toEqual(saved);
+    expect(isAlwaysOff([{ days: [1, 2, 3, 4, 5, 6, 7], from: '00:00', to: reloaded[1].to }])).toBe(true);
+  });
 });
 
 describe('projectionText', () => {
@@ -126,22 +164,30 @@ describe('projectionText', () => {
 });
 
 describe('projectionFiring / budgetFiring', () => {
-  it('fires past the 5% band and not before it', () => {
-    expect(projectionFiring(view({ budget: 100, projection: 104 }))).toBe(false);
-    expect(projectionFiring(view({ budget: 100, projection: 106 }))).toBe(true);
+  it('reads the server-computed projection_firing flag rather than recomputing the crossing', () => {
+    // 99 sits inside the server's 95–105% hysteresis band (guardrails.Budget):
+    // a client-side `projection > budget * 1.05` recompute would call both
+    // of these "not firing", disagreeing with the journal whichever way the
+    // flag actually reads. This is exactly the case that distinguishes
+    // reading the flag from guessing at it.
+    expect(projectionFiring(view({ budget: 100, projection: 99, projection_firing: true }))).toBe(true);
+    expect(projectionFiring(view({ budget: 100, projection: 99, projection_firing: false }))).toBe(false);
   });
 
-  it('never fires with no projection or no budget', () => {
-    expect(projectionFiring(view({ budget: 100, projection: null }))).toBe(false);
-    expect(projectionFiring(view({ budget: 0, projection: 999 }))).toBe(false);
+  it('follows the flag even past 100%, since only the journal tracks the band', () => {
+    expect(projectionFiring(view({ budget: 100, projection: 120, projection_firing: false }))).toBe(false);
   });
 
   it('is true when a threshold fires even if the projection does not', () => {
-    expect(budgetFiring(view({ thresholds: [{ pct: 80, line: 80, firing: true }], projection: null }))).toBe(true);
+    expect(
+      budgetFiring(view({ thresholds: [{ pct: 80, line: 80, firing: true }], projection: null, projection_firing: false }))
+    ).toBe(true);
   });
 
   it('is false when nothing fires', () => {
-    expect(budgetFiring(view({ thresholds: [{ pct: 80, line: 80, firing: false }], projection: 50 }))).toBe(false);
+    expect(
+      budgetFiring(view({ thresholds: [{ pct: 80, line: 80, firing: false }], projection: 50, projection_firing: false }))
+    ).toBe(false);
   });
 });
 

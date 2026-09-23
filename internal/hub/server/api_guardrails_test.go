@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vincentlauriat/serversmonitor/internal/hub/azure"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
@@ -78,6 +79,86 @@ func TestGuardrailsViewComputesFromTheStore(t *testing.T) {
 	// day: a projection must come back, not null.
 	if v["projection"] == nil {
 		t.Fatal("projection = null, want a figure past day 4")
+	}
+}
+
+// budget_projection has its own 5% hysteresis band (guardrails.Budget): once
+// fired, it stays fired until the projection drops back below 95% of
+// budget, not merely below the 105% line it fired past. The view must read
+// that state from the journal's last event, not recompute the plain
+// crossing — a projection sitting inside the 95–105% band is exactly where
+// a naive `projection > budget * 1.05` recompute and the journal disagree.
+func TestGuardrailsProjectionFiringComesFromTheJournalNotARecompute(t *testing.T) {
+	r := newAzureRig(t)
+	now := r.now // 2026-09-17: daysBilled = 16, daysInMonth(Sep) = 30
+	if err := r.st.SetSetting("azure_budget_monthly", "100"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.st.ReplaceAzureInventory([]string{"rg"}, []store.AzureResource{
+		{ID: "/s/d1", ARMID: "/S/d1", Name: "d1", Type: "Microsoft.Compute/disks",
+			ResourceGroup: "rg", Location: "westeurope", Tags: map[string]string{}},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	// spent 53 -> projection = 53 * 30 / 16 = 99.375: inside the 95–105 band,
+	// so a plain `projection > budget * 1.05` recompute reads 99.375 as NOT
+	// firing regardless of history.
+	if err := r.st.UpsertAzureCosts([]store.AzureCost{
+		{ResourceID: "/s/d1", Period: now.Format("2006-01"), Amount: 53, Currency: "EUR", AsOf: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.st.InsertGuardrailEvent(store.GuardrailEvent{Subject: "budget", Rule: "budget_projection",
+		Kind: "fired", Value: 110, At: now.Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, data := r.do(t, "GET", "/api/v1/azure/guardrails", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET guardrails = %d %s", resp.StatusCode, data)
+	}
+	var v map[string]any
+	if err := json.Unmarshal(data, &v); err != nil {
+		t.Fatal(err)
+	}
+	if v["projection_firing"] != true {
+		t.Fatalf("journal says budget_projection is fired; the in-band value (%v) must not resolve it early — projection_firing = %v",
+			v["projection"], v["projection_firing"])
+	}
+}
+
+// The mirror of the case above: nothing in the journal says budget_projection
+// ever fired, and the projection sits inside the same 95–105% band. Firing
+// must stay false — the band alone, with no prior crossing on record, does
+// not turn the rule on.
+func TestGuardrailsProjectionNotFiringWithNoJournalFire(t *testing.T) {
+	r := newAzureRig(t)
+	now := r.now
+	if err := r.st.SetSetting("azure_budget_monthly", "100"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.st.ReplaceAzureInventory([]string{"rg"}, []store.AzureResource{
+		{ID: "/s/d1", ARMID: "/S/d1", Name: "d1", Type: "Microsoft.Compute/disks",
+			ResourceGroup: "rg", Location: "westeurope", Tags: map[string]string{}},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.st.UpsertAzureCosts([]store.AzureCost{
+		{ResourceID: "/s/d1", Period: now.Format("2006-01"), Amount: 53, Currency: "EUR", AsOf: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, data := r.do(t, "GET", "/api/v1/azure/guardrails", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET guardrails = %d %s", resp.StatusCode, data)
+	}
+	var v map[string]any
+	if err := json.Unmarshal(data, &v); err != nil {
+		t.Fatal(err)
+	}
+	if v["projection_firing"] != false {
+		t.Fatalf("no journal event for budget_projection; projection_firing must be false, got %v", v["projection_firing"])
 	}
 }
 

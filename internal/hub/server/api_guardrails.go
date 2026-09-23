@@ -52,16 +52,23 @@ type guardrailEventView struct {
 }
 
 type guardrailsView struct {
-	Budget     float64              `json:"budget"`
-	Spent      float64              `json:"spent"`
-	Currencies []string             `json:"currencies"`
-	Projection *float64             `json:"projection"` // null before day 4
-	DaysBilled int                  `json:"days_billed"`
-	Thresholds []thresholdView      `json:"thresholds"`
-	Shares     []shareView          `json:"shares"`
-	Orphans    []orphanView         `json:"orphans"`
-	Events     []guardrailEventView `json:"events"` // last 20
-	Timezone   string               `json:"timezone"`
+	Budget     float64  `json:"budget"`
+	Spent      float64  `json:"spent"`
+	Currencies []string `json:"currencies"`
+	Projection *float64 `json:"projection"` // null before day 4
+	// ProjectionFiring is read from the journal's last budget_projection
+	// event, the same way each thresholdView.Firing is below — never
+	// recomputed here. budget_projection has its own 5% hysteresis band
+	// (guardrails.Budget), so a plain `projection > budget * 1.05` recompute
+	// would disagree with the journal inside that band; the journal is the
+	// one place that band is actually evaluated.
+	ProjectionFiring bool                 `json:"projection_firing"`
+	DaysBilled       int                  `json:"days_billed"`
+	Thresholds       []thresholdView      `json:"thresholds"`
+	Shares           []shareView          `json:"shares"`
+	Orphans          []orphanView         `json:"orphans"`
+	Events           []guardrailEventView `json:"events"` // last 20
+	Timezone         string               `json:"timezone"`
 }
 
 // daysBilled mirrors guardrails' own private daysBilled: how many days of the
@@ -110,6 +117,7 @@ func (s *server) handleGetGuardrails(w http.ResponseWriter, r *http.Request, _ s
 	if p, ok := guardrails.Projection(now, asOf, spent); ok {
 		v.Projection = &p
 	}
+	v.ProjectionFiring = last[store.GuardrailKey{Subject: "budget", Rule: "budget_projection"}].Kind == "fired"
 
 	for _, pct := range set.Thresholds {
 		firing := last[store.GuardrailKey{Subject: "budget", Rule: "budget_threshold", Detail: strconv.Itoa(pct)}].Kind == "fired"

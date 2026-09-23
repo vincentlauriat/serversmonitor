@@ -30,15 +30,47 @@ export function parseThresholds(raw: string): number[] {
 }
 
 /**
+ * True for a `to` that means "end of day" on the Go side: either spelling
+ * that guardrails.clock (schedule.go) turns into midnight the next day.
+ * "24:00" is Go's own literal for it (EveningsAndWeekends uses it); "00:00"
+ * reaches the exact same instant through the ordinary to<=from
+ * midnight-crossing rule, since 0 <= from holds for every from — see
+ * editableWindows for why the editor only ever produces the second one.
+ */
+function isEndOfDay(to: string): boolean {
+  return to === '24:00' || to === '00:00';
+}
+
+/**
+ * Windows normalized so every "end of day" `to` reads as "00:00" instead of
+ * "24:00". A native `<input type="time">`'s value domain stops at 23:59:
+ * pushed "24:00", the element silently reads back as blank rather than
+ * dispatching a change Svelte's `bind:value` could see (confirmed against
+ * the DOM value-sanitization behaviour of type=time, not guessed) — so the
+ * one window a person is most likely to load, the evenings-and-weekends
+ * preset's weekend window, would render with an empty end-time field the
+ * moment the editor opens.
+ *
+ * This is not an approximation: per isEndOfDay's comment, "00:00" and
+ * "24:00" already produce the identical off-interval on the Go side for
+ * every window, not just a full day one, so converting one to the other
+ * loses nothing and round-trips through a save exactly as entered.
+ */
+export function editableWindows(ws: Window[]): Window[] {
+  return ws.map((w) => (w.to === '24:00' ? { ...w, to: '00:00' } : w));
+}
+
+/**
  * The common default: off outside business hours on weekdays, off all
  * weekend. Mirrors guardrails.EveningsAndWeekends on the Go side field for
- * field.
+ * field, then run through editableWindows so the weekend window's end time
+ * is one the schedule editor can actually display.
  */
 export function eveningsAndWeekends(): Window[] {
-  return [
+  return editableWindows([
     { days: [1, 2, 3, 4, 5], from: '20:00', to: '07:00' },
     { days: [6, 7], from: '00:00', to: '24:00' }
-  ];
+  ]);
 }
 
 function dayRange(days: number[]): string {
@@ -55,7 +87,7 @@ function dayRange(days: number[]): string {
 export function windowsSummary(ws: Window[]): string {
   if (ws.length === 0) return 'no window';
   return ws
-    .map((w) => `${dayRange(w.days)} ${w.from === '00:00' && w.to === '24:00' ? 'all day' : `${w.from}–${w.to}`}`)
+    .map((w) => `${dayRange(w.days)} ${w.from === '00:00' && isEndOfDay(w.to) ? 'all day' : `${w.from}–${w.to}`}`)
     .join(', ');
 }
 
@@ -94,7 +126,7 @@ function structuralProblem(ws: Window[]): string | null {
  * windowsSavable.
  */
 export function isAlwaysOff(ws: Window[]): boolean {
-  return ws.some((w) => w.from === '00:00' && w.to === '24:00' && w.days.length === 7);
+  return ws.some((w) => w.from === '00:00' && isEndOfDay(w.to) && w.days.length === 7);
 }
 
 /**
@@ -157,17 +189,18 @@ export function projectionText(v: GuardrailsView): string {
 }
 
 /**
- * Whether the projection rule is currently firing. The view carries a
- * `firing` flag per budget_threshold instance but not for budget_projection,
- * which has its own 5 % hysteresis band server-side (guardrails.Budget).
- * Rather than guess at that hysteresis state from the truncated 20-event
- * list, this reads the plain crossing the rule fires on — the same number,
- * without the resolve-side deadband. The bar can stay grey a fraction of a
- * percent longer than the server would on the way back down; the event log
- * below is the source of truth for exactly when it fired and resolved.
+ * Whether the projection rule is currently firing, straight from the
+ * server's `projection_firing` flag. That flag is read from the guardrail
+ * journal's last budget_projection event (see api_guardrails.go) rather
+ * than recomputed — budget_projection has its own 5 % hysteresis band
+ * server-side (guardrails.Budget), and only the journal actually tracks
+ * which side of that band the rule is currently on. An earlier version of
+ * this function recomputed the plain crossing client-side, which could
+ * disagree with the server inside the band; reading the flag directly
+ * removes that gap rather than narrowing it.
  */
 export function projectionFiring(v: GuardrailsView): boolean {
-  return v.budget > 0 && v.projection !== null && v.projection !== undefined && v.projection > v.budget * 1.05;
+  return v.projection_firing;
 }
 
 /** Whether the budget bar itself should read as firing: any threshold, or

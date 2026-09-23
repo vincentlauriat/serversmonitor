@@ -238,6 +238,10 @@ export interface GuardrailsView {
   currencies: string[];
   /** null before day 4 of billed data, and whenever there is no cost data. */
   projection: number | null;
+  /** Read from the guardrail journal's last budget_projection event, not
+   * recomputed client-side — that rule has its own 5% hysteresis band
+   * server-side, which only the journal actually tracks. */
+  projection_firing: boolean;
   days_billed: number;
   thresholds: GuardrailThreshold[];
   shares: GuardrailShare[];

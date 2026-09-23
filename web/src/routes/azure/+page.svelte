@@ -20,6 +20,7 @@
     budgetFiring,
     canDeleteOrphan,
     DAY_LABELS,
+    editableWindows,
     eveningsAndWeekends,
     orphanLabel,
     projectionText,
@@ -66,7 +67,12 @@
       return;
     }
     editingSchedule = resourceID;
-    editWindows = existing ? existing.off_windows.map((w) => ({ ...w, days: [...w.days] })) : [];
+    // editableWindows first: a schedule saved before this fix (or written
+    // directly through the API) can still carry Go's own "24:00" spelling
+    // for an end-of-day window, which a native <input type="time"> renders
+    // blank — normalizing on load, not just in the preset button, is what
+    // keeps every such window visible the moment the editor opens.
+    editWindows = existing ? editableWindows(existing.off_windows).map((w) => ({ ...w, days: [...w.days] })) : [];
     editEnabled = existing?.enabled ?? true;
     scheduleErr = '';
   }
