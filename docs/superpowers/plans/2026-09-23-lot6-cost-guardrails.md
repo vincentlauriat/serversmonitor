@@ -2356,6 +2356,16 @@ git commit -m "feat(guardrails): off windows — parse, evaluate, last boundary,
 
 ### Task 8: Schedules in the hub — boundary crossing, catch-up, failure event
 
+**`LastBoundary`'s `ok=false` is overloaded — do not read it as "no schedule".**
+Task 7's implementer flagged this. `ok=false` means *either* "this schedule has no
+windows configured" *or* "there is no boundary inside the lookback for this
+instant" — the ordinary case for a machine in the middle of a long on-period. The
+startup catch-up must not treat the second as the first: a schedule that simply has
+no boundary in range is healthy and must be left alone, not disabled, not journalled
+as a failure, and not marked as having missed something. Add a comment at the call
+site saying which of the two you are handling, so the next reader does not have to
+re-derive it.
+
 **Symbols landed earlier with no caller — this task wires them.** Tasks 5 and 6
 deliberately shipped two symbols that nothing calls yet, and two separate reviews
 flagged each as unverifiable from its own diff. Both belong to this task. Confirm
