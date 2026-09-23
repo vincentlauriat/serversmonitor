@@ -28,9 +28,19 @@ func TestGuardrailEventsJournalOnlyWhatIsInserted(t *testing.T) {
 	if got := last[GuardrailKey{"/subscriptions/x/disk1", "orphan", ""}]; got.Kind != "fired" || got.Value != 3 {
 		t.Fatalf("last orphan = %+v", got)
 	}
+	// ListGuardrailEvents(2) must return the two newest rows, newest first:
+	// the orphan event (inserted last) at [0], the resolved threshold
+	// (inserted second) at [1]. Both positions are asserted explicitly so a
+	// swap cannot pass.
 	list, err := s.ListGuardrailEvents(2)
-	if err != nil || len(list) != 2 || list[0].Kind != "resolved" && list[0].Rule != "orphan" {
-		t.Fatalf("list newest first, 2 rows: %v %+v", err, list)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("list = %v %+v", err, list)
+	}
+	if list[0].Subject != "/subscriptions/x/disk1" || list[0].Rule != "orphan" || list[0].Kind != "fired" {
+		t.Fatalf("list[0] must be the newest event, the orphan: %+v", list[0])
+	}
+	if list[1].Subject != "budget" || list[1].Rule != "budget_threshold" || list[1].Detail != "80" || list[1].Kind != "resolved" {
+		t.Fatalf("list[1] must be the second newest, the resolved threshold: %+v", list[1])
 	}
 }
 
@@ -67,12 +77,30 @@ func TestADeliveryPointsAtExactlyOneJournal(t *testing.T) {
 	}
 }
 
-// TestADeliveryWithNoEventIsRefused is the mutation check for the CHECK
+// TestADeliveryMustPointAtExactlyOneEvent is the mutation check for the CHECK
 // constraint on deliveries: a row with neither event_id nor
-// guardrail_event_id set must be impossible, not merely unused.
-func TestADeliveryWithNoEventIsRefused(t *testing.T) {
+// guardrail_event_id set, or with both set, must be impossible, not merely
+// unused. The "both set" direction matters once lot 6 starts writing
+// guardrail deliveries beside alert deliveries: nothing else in the suite
+// would catch a call site that filled in both foreign keys.
+func TestADeliveryMustPointAtExactlyOneEvent(t *testing.T) {
 	s := openTest(t)
+	now := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+
 	if _, err := s.db.Exec(`INSERT INTO deliveries (channel,state,created_at,updated_at) VALUES ('smtp','pending','x','x')`); err == nil {
 		t.Fatal("a delivery with neither event_id nor guardrail_event_id set must be refused")
+	}
+
+	h, _, _ := s.CreateHost("pi", now)
+	ae, err := s.InsertAlertEvent(AlertEvent{RuleID: 0, HostID: h.ID, Metric: "status", Kind: "fired", Value: 1, At: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ge, err := s.InsertGuardrailEvent(GuardrailEvent{Subject: "budget", Rule: "budget_threshold", Detail: "80", Kind: "fired", Value: 41.2, At: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO deliveries (event_id, guardrail_event_id, channel, state, created_at, updated_at) VALUES (?,?,'smtp','pending','x','x')`, ae.ID, ge.ID); err == nil {
+		t.Fatal("a delivery with both event_id and guardrail_event_id set must be refused")
 	}
 }
