@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/vincentlauriat/serversmonitor/internal/hub/auth"
+	"github.com/vincentlauriat/serversmonitor/internal/hub/entra"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 )
 
@@ -37,6 +38,8 @@ type Deps struct {
 	Log           *slog.Logger
 	SessionTTL    time.Duration
 	Secure        bool // set the Secure flag on the cookie (behind TLS)
+	// Entra runs the Microsoft sign-in. Nil builds a default one.
+	Entra *entra.Provider
 }
 
 type server struct {
@@ -54,6 +57,9 @@ func New(d Deps) http.Handler {
 	if d.Log == nil {
 		d.Log = slog.Default()
 	}
+	if d.Entra == nil {
+		d.Entra = entra.NewProvider()
+	}
 	s := &server{Deps: d, limiter: auth.NewLimiter(5, time.Minute)}
 	mux := http.NewServeMux()
 
@@ -62,6 +68,15 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("POST /api/v1/login", s.handleLogin)
 	mux.Handle("POST /api/v1/logout", s.auth(s.handleLogout))
 	mux.Handle("PUT /api/v1/password", s.auth(s.handlePassword))
+
+	mux.HandleFunc("GET /api/v1/auth/entra/start", s.handleEntraStart)
+	mux.HandleFunc("GET /api/v1/auth/entra/callback", s.handleEntraCallback)
+	mux.Handle("GET /api/v1/auth/entra/settings", s.auth(s.handleGetEntraSettings))
+	mux.Handle("PUT /api/v1/auth/entra/settings", s.auth(s.handlePutEntraSettings))
+	mux.Handle("GET /api/v1/users", s.auth(s.handleListUsers))
+	mux.Handle("POST /api/v1/users", s.auth(s.handleAddUser))
+	mux.Handle("PUT /api/v1/users/{id}", s.auth(s.handleSetUserRole))
+	mux.Handle("DELETE /api/v1/users/{id}", s.auth(s.handleDeleteUser))
 
 	mux.Handle("GET /api/v1/hosts", s.auth(s.handleListHosts))
 	mux.Handle("POST /api/v1/hosts", s.auth(s.handleCreateHost))
@@ -144,7 +159,10 @@ func clientKey(r *http.Request) string {
 	return host
 }
 
-// auth wraps a handler so it only runs with a valid session.
+// auth wraps a handler so it only runs with a valid session, and a viewer
+// only ever reads. The role check lives here, once, rather than in each
+// handler: a write route added later is refused to viewers without anybody
+// having to remember to say so. Signing out is the one write a viewer keeps.
 func (s *server) auth(next func(http.ResponseWriter, *http.Request, store.User)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, ok := s.currentUser(r)
@@ -152,8 +170,20 @@ func (s *server) auth(next func(http.ResponseWriter, *http.Request, store.User))
 			writeErr(w, http.StatusUnauthorized, "not logged in")
 			return
 		}
+		if u.Role != store.RoleAdmin && !readOnlyAllowed(r) {
+			writeErr(w, http.StatusForbidden, "read-only account: ask an admin to make this change")
+			return
+		}
 		next(w, r, u)
 	})
+}
+
+func readOnlyAllowed(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+		return true
+	}
+	return r.URL.Path == "/api/v1/logout"
 }
 
 func (s *server) currentUser(r *http.Request) (store.User, bool) {

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/vincentlauriat/serversmonitor/internal/hub/auth"
+	"github.com/vincentlauriat/serversmonitor/internal/hub/entra"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 )
 
@@ -16,7 +17,8 @@ type credentials struct {
 
 func (s *server) handleMe(w http.ResponseWriter, r *http.Request) {
 	if u, ok := s.currentUser(r); ok {
-		writeJSON(w, http.StatusOK, map[string]any{"email": u.Email, "version": s.Version})
+		writeJSON(w, http.StatusOK, map[string]any{"email": u.Email, "version": s.Version,
+			"role": u.Role, "provider": u.Provider})
 		return
 	}
 	n, err := s.Store.CountUsers()
@@ -24,7 +26,9 @@ func (s *server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusUnauthorized, map[string]any{"setup_required": n == 0})
+	// entra says whether the login page offers the Microsoft button.
+	writeJSON(w, http.StatusUnauthorized, map[string]any{"setup_required": n == 0,
+		"entra": entra.Load(s.Store).Enabled()})
 }
 
 func (s *server) handleSetup(w http.ResponseWriter, r *http.Request) {
@@ -76,12 +80,15 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Verify even when the user is unknown, so timing does not reveal which
-	// e-mail addresses exist.
+	// e-mail addresses exist. An Entra account has no password at all and
+	// goes through the same dummy verification: before lot 11 the dummy hash
+	// stood in for any empty one, so a password-less account would have
+	// accepted "placeholder". The provider check below is what closes that.
 	hash := u.PasswordHash
-	if hash == "" {
+	if hash == "" || u.Provider != store.ProviderLocal {
 		hash, _ = auth.HashPassword("placeholder")
 	}
-	if err != nil || !auth.VerifyPassword(hash, c.Password) {
+	if err != nil || u.Provider != store.ProviderLocal || !auth.VerifyPassword(hash, c.Password) {
 		s.limiter.Fail(key, s.Now())
 		writeErr(w, http.StatusUnauthorized, "invalid credentials")
 		return
@@ -109,6 +116,10 @@ func (s *server) handlePassword(w http.ResponseWriter, r *http.Request, u store.
 	}
 	if err := readJSON(w, r, &body); err != nil || len(body.New) < 8 {
 		writeErr(w, http.StatusBadRequest, "new password must have at least 8 characters")
+		return
+	}
+	if u.Provider != store.ProviderLocal {
+		writeErr(w, http.StatusBadRequest, "this account signs in with Microsoft and has no password here")
 		return
 	}
 	if !auth.VerifyPassword(u.PasswordHash, body.Current) {
