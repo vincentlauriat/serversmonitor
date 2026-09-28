@@ -48,3 +48,47 @@ func TestUsersAndSessions(t *testing.T) {
 		t.Fatalf("purge left %d sessions", n)
 	}
 }
+
+func TestRolesAndTheLastLocalAdmin(t *testing.T) {
+	s := openTest(t)
+	admin, _ := s.CreateUser("v@example.com", "hash", t0)
+	if admin.Role != RoleAdmin || admin.Provider != ProviderLocal {
+		t.Fatalf("the setup account is a local admin: %+v", admin)
+	}
+	ann, err := s.AddUser("Ann@Example.com", "", RoleViewer, ProviderEntra, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddUser("ann@example.com", "", RoleAdmin, ProviderEntra, t0); !errors.Is(err, ErrUserExists) {
+		t.Fatalf("a second ann = %v", err)
+	}
+	got, _ := s.UserByEmail("ann@example.com")
+	if got.Role != RoleViewer || got.Provider != ProviderEntra || got.PasswordHash != "" {
+		t.Fatalf("ann = %+v", got)
+	}
+
+	// The only local admin can be neither demoted nor removed, even when an
+	// Entra admin exists: the local account is the way in when Entra is down.
+	s.SetUserRole(ann.ID, RoleAdmin)
+	if err := s.SetUserRole(admin.ID, RoleViewer); !errors.Is(err, ErrLastLocalAdmin) {
+		t.Fatalf("demote = %v", err)
+	}
+	if err := s.DeleteUser(admin.ID); !errors.Is(err, ErrLastLocalAdmin) {
+		t.Fatalf("delete = %v", err)
+	}
+
+	// Removing someone signs them out.
+	tok, _ := s.CreateSession(ann.ID, t0.Add(time.Hour))
+	if err := s.DeleteUser(ann.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SessionUser(tok, t0); !errors.Is(err, ErrNotFound) {
+		t.Fatal("a removed user's session must stop working")
+	}
+	if err := s.SetUserRole(ann.ID, RoleAdmin); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("role of a removed user = %v", err)
+	}
+	if users, _ := s.ListUsers(); len(users) != 1 {
+		t.Fatalf("users = %+v", users)
+	}
+}

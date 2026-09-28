@@ -542,7 +542,14 @@ est dans la base et éditable depuis l'interface.
   et HTTP-01 sur l'écoute de redirection, le cache à côté de la base pour qu'un redémarrage ne
   touche pas aux limites de Let's Encrypt). Un reverse proxy devant reste possible ;
   `SM_SECURE_COOKIES=true` derrière lui.
-- **Pas de comptes utilisateurs.** Un seul administrateur local. Entra ID est repoussé.
+- **Deux rôles, pas des permissions.** Depuis le lot 11 plusieurs personnes se connectent : l'admin
+  local créé au setup, avec un mot de passe, et des comptes Microsoft Entra ID qu'un admin liste par
+  e-mail (la liste est la liste d'autorisation ; `common` et `organizations` sont refusés, et le `tid`
+  du jeton doit égaler le GUID du tenant configuré, car Entra signe les jetons de tous les tenants
+  avec les mêmes clés). Un compte en lecture seule ne fait que lire : `auth` lui refuse toute requête
+  autre que GET, à un seul endroit, donc une route d'écriture ajoutée plus tard est fermée par défaut.
+  Le dernier admin local ne peut être ni supprimé ni rétrogradé : c'est l'accès quand Entra est en
+  panne. Un compte Entra n'a aucun mot de passe et la route de mot de passe le refuse d'emblée.
 - **Un seul canal de chaque type.** Le routage choisit parmi e-mail, webhook et Teams ; pas deux
   canaux Teams ni deux listes de destinataires. Mettre un hôte en sourdine le fait taire partout.
 - **Pas de cluster.** Un hub, un fichier SQLite, une machine.

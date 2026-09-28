@@ -8,15 +8,26 @@
     type Host,
     type Notifications,
     type Rule,
-    type Settings
+    type Settings,
+    type EntraSettings,
+    type Me,
+    type UserRow
   } from '$lib/api';
+  import { canEdit, isLastLocalAdmin, providerLabel, roleLabel } from '$lib/users';
   import { enabledChannels, healthLabel, parseHeaders, parseRecipients, routeLabel, toPayload } from '$lib/notify';
   import { parseGroups, toSettingsPayload } from '$lib/azure';
   import { parseThresholds } from '$lib/guardrails';
   import Modal from '$lib/components/Modal.svelte';
   import ChannelPicker from '$lib/components/ChannelPicker.svelte';
 
-  type Tab = 'hosts' | 'alerts' | 'notifications' | 'azure' | 'system';
+  type Tab = 'hosts' | 'alerts' | 'notifications' | 'azure' | 'users' | 'system';
+
+  let me = $state<Me | null>(null);
+  let users = $state<UserRow[]>([]);
+  let entraCfg = $state<EntraSettings | null>(null);
+  let entraSecret = $state<string | null>(null); // null = untouched
+  let newUserEmail = $state('');
+  let newUserRole = $state<'admin' | 'viewer'>('viewer');
   let tab = $state<Tab>('hosts');
   let hosts = $state<Host[]>([]);
   let rules = $state<Rule[]>([]);
@@ -63,6 +74,14 @@
   ];
 
   async function load() {
+    const [m, us, ec] = await Promise.all([
+      api.get<Me>('/api/v1/me'),
+      api.get<{ users: UserRow[] }>('/api/v1/users'),
+      api.get<EntraSettings>('/api/v1/auth/entra/settings')
+    ]);
+    me = m;
+    users = us.users;
+    entraCfg = ec;
     const [h, a, s, n, d, z, g] = await Promise.all([
       api.get<Host[]>('/api/v1/hosts'),
       api.get<{ rules: Rule[] }>('/api/v1/alerts'),
@@ -92,6 +111,7 @@
     if (location.hash === '#alerts') tab = 'alerts';
     else if (location.hash === '#notifications') tab = 'notifications';
     else if (location.hash === '#azure') tab = 'azure';
+    else if (location.hash === '#users') tab = 'users';
     else if (location.hash === '#system') tab = 'system';
     load().catch((e) => (err = String(e)));
   });
@@ -227,8 +247,26 @@
     ['alerts', 'Alert rules'],
     ['notifications', 'Notifications'],
     ['azure', 'Azure'],
+    ['users', 'Users'],
     ['system', 'System']
   ];
+
+  const addUser = () =>
+    run(async () => {
+      await api.post('/api/v1/users', { email: newUserEmail, role: newUserRole });
+      newUserEmail = '';
+    }, 'User added. They can now sign in with Microsoft.');
+  const setRole = (u: UserRow, role: string) => run(() => api.put(`/api/v1/users/${u.id}`, { role }));
+  const removeUser = (u: UserRow) => {
+    if (confirm(`Remove ${u.email}? They are signed out at once.`)) run(() => api.del(`/api/v1/users/${u.id}`), 'User removed.');
+  };
+  const saveEntra = () =>
+    run(async () => {
+      const body: Record<string, string> = { tenant: entraCfg!.tenant, client_id: entraCfg!.client_id };
+      if (entraSecret !== null) body.client_secret = entraSecret;
+      await api.put('/api/v1/auth/entra/settings', body);
+      entraSecret = null;
+    });
 
   async function copyInstall() {
     try {
@@ -696,6 +734,88 @@
       </form>
     {/if}
   {/if}
+{:else if tab === 'users'}
+  {@const inp = 'mt-1 w-full rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-800'}
+  {@const box = 'rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900'}
+  <p class="mb-3 text-sm text-zinc-500">
+    An admin changes anything; a read-only account sees everything and changes nothing. People sign in with Microsoft
+    once their address is listed here. The local account made at setup always keeps its password, so the hub stays
+    reachable when Microsoft sign-in is misconfigured or down.
+  </p>
+  <div class="overflow-x-auto rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+    <table class="w-full text-sm">
+      <thead class="text-left text-xs uppercase text-zinc-500">
+        <tr><th class="px-3 py-2">Email</th><th class="px-3 py-2">Signs in with</th><th class="px-3 py-2">Role</th><th></th></tr>
+      </thead>
+      <tbody>
+        {#each users as u (u.id)}
+          {@const locked = isLastLocalAdmin(u, users)}
+          <tr class="border-t border-zinc-100 dark:border-zinc-800">
+            <td class="px-3 py-2">{u.email}{u.self ? ' (you)' : ''}</td>
+            <td class="px-3 py-2">{providerLabel(u.provider)}</td>
+            <td class="px-3 py-2">
+              {#if canEdit(me) && !locked}
+                <select
+                  class="rounded border border-zinc-300 px-1 py-0.5 dark:border-zinc-700 dark:bg-zinc-800"
+                  value={u.role}
+                  onchange={(e) => setRole(u, (e.currentTarget as HTMLSelectElement).value)}
+                >
+                  <option value="admin">Admin</option>
+                  <option value="viewer">Read only</option>
+                </select>
+              {:else}
+                {roleLabel(u.role)}
+              {/if}
+            </td>
+            <td class="px-3 py-2 text-right">
+              {#if canEdit(me) && !locked}
+                <button class="text-red-600 hover:underline" onclick={() => removeUser(u)}>Remove</button>
+              {:else if locked}
+                <span class="text-xs text-zinc-400" title="The way in when Microsoft sign-in is down">kept</span>
+              {/if}
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  </div>
+  {#if canEdit(me)}
+    <form class="mt-3 flex flex-wrap items-end gap-2 text-sm" onsubmit={(e) => { e.preventDefault(); addUser(); }}>
+      <label class="block">Microsoft account e-mail<input class={inp} type="email" bind:value={newUserEmail} placeholder="ann@contoso.com" required /></label>
+      <label class="block">
+        Role
+        <select class={inp} bind:value={newUserRole}>
+          <option value="viewer">Read only</option>
+          <option value="admin">Admin</option>
+        </select>
+      </label>
+      <button class="rounded bg-zinc-900 px-3 py-1.5 text-white dark:bg-zinc-100 dark:text-zinc-900">Add</button>
+    </form>
+
+    {#if entraCfg}
+      <form class="{box} mt-6 max-w-2xl space-y-3 text-sm" onsubmit={(e) => { e.preventDefault(); saveEntra(); }}>
+        <h3 class="font-medium">Microsoft Entra ID</h3>
+        <p class="text-xs text-zinc-500">
+          Register an app in Entra (single tenant), add a client secret, and give it this redirect URI (type Web):
+          <code class="break-all">{entraCfg.redirect_uri || 'set the public URL under Notifications first'}</code>
+        </p>
+        <label class="block">Directory (tenant) id<input class={inp} bind:value={entraCfg.tenant} placeholder="00000000-0000-0000-0000-000000000000" /></label>
+        <label class="block">Application (client) id<input class={inp} bind:value={entraCfg.client_id} /></label>
+        <label class="block">
+          Client secret
+          <input
+            class={inp}
+            type="password"
+            autocomplete="new-password"
+            placeholder={entraCfg.client_secret_set ? '•••••••• (unchanged)' : 'no secret set'}
+            value={entraSecret ?? ''}
+            oninput={(e) => (entraSecret = (e.currentTarget as HTMLInputElement).value)}
+          />
+        </label>
+        <button class="rounded bg-zinc-900 px-3 py-1.5 text-white dark:bg-zinc-100 dark:text-zinc-900">Save</button>
+      </form>
+    {/if}
+  {/if}
 {:else}
   <form class="max-w-md space-y-3 text-sm" onsubmit={(e) => { e.preventDefault(); saveSettings(); }}>
     <label class="block">
@@ -717,10 +837,12 @@
     <button class="rounded bg-zinc-900 px-3 py-1.5 text-white dark:bg-zinc-100 dark:text-zinc-900">Save</button>
     <p class="text-zinc-500">Daily averages are kept forever. Hub version {settings.version ?? '—'}.</p>
   </form>
+  {#if me?.provider === 'local'}
   <form class="mt-8 max-w-md space-y-3 text-sm" onsubmit={(e) => { e.preventDefault(); changePassword(); }}>
     <h2 class="font-medium">Change password</h2>
     <input class="w-full rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-800" type="password" autocomplete="current-password" placeholder="Current password" bind:value={current} required />
     <input class="w-full rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-800" type="password" autocomplete="new-password" placeholder="New password, 8 characters or more" bind:value={next} minlength="8" required />
     <button class="rounded border border-zinc-300 px-3 py-1.5 dark:border-zinc-700">Change</button>
   </form>
+  {/if}
 {/if}

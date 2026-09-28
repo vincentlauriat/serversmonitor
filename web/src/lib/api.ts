@@ -97,7 +97,9 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
-    public setupRequired = false
+    public setupRequired = false,
+    /** The login page offers "Sign in with Microsoft" when this is set. */
+    public entra = false
   ) {
     super(message);
   }
@@ -111,7 +113,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   });
   if (res.status === 204) return undefined as T;
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, data.error ?? res.statusText, data.setup_required === true);
+  if (!res.ok) throw new ApiError(res.status, data.error ?? res.statusText, data.setup_required === true, data.entra === true);
   return data as T;
 }
 
@@ -293,4 +295,25 @@ export interface AzureSettings {
   provision_image: string;
   provision_admin_user: string;
   provision_ssh_key: string;
+}
+
+/** Who is signed in, as /api/v1/me answers. */
+export interface Me {
+  email: string;
+  version: string;
+  role: 'admin' | 'viewer';
+  provider: 'local' | 'entra';
+}
+export interface UserRow {
+  id: number;
+  email: string;
+  role: 'admin' | 'viewer';
+  provider: 'local' | 'entra';
+  self: boolean;
+}
+export interface EntraSettings {
+  tenant: string;
+  client_id: string;
+  client_secret_set: boolean;
+  redirect_uri: string;
 }

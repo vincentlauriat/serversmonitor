@@ -7,6 +7,18 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Several people (lot 11). Sign-in with Microsoft Entra ID (OIDC code flow with PKCE, ID token
+  signature, issuer, audience, tenant, expiry and nonce all checked), for addresses an admin lists
+  under Settings → Users; two roles, admin and read-only, the latter refused any change by the API
+  itself; the local account made at setup stays as the way in when Entra is down, and cannot be
+  removed or demoted while it is the last local admin. Migration 10 (`users.role`,
+  `users.provider`); `/api/v1/users`, `/api/v1/auth/entra/settings`, `/start`, `/callback`.
+
+### Security
+- The password route no longer runs an account without a password against the dummy hash kept for
+  timing: before this, a password-less account would have accepted the word used to build that
+  hash. No such account could exist before lot 11; Entra accounts are the first.
+
 - Native TLS (lot 10). The hub can serve HTTPS itself, from a certificate on disk
   (`SM_TLS_CERT`, `SM_TLS_KEY`), re-read when the files change, or from Let's Encrypt
   (`SM_TLS_DOMAINS`, `SM_TLS_EMAIL`, `SM_ACME_DIRECTORY`), with TLS-ALPN-01 on the HTTPS port and

@@ -16,6 +16,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/vincentlauriat/serversmonitor/internal/hub/entra"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 	"github.com/vincentlauriat/serversmonitor/internal/proto"
 )
@@ -35,6 +36,7 @@ type rig struct {
 	notify Notifier
 	azure  Azurer
 	now    time.Time
+	entra  *entra.Provider
 }
 
 func newRig(t *testing.T) *rig {
@@ -46,8 +48,9 @@ func newRig(t *testing.T) *rig {
 	static := fstest.MapFS{"index.html": {Data: []byte("<html>app</html>")}, "_app/x.js": {Data: []byte("js")}}
 	r := &rig{st: st, bus: NewBroadcaster(), agents: &fakeAgents{}, notify: &fakeNotifier{}, azure: &fakeAzurer{},
 		now: time.Date(2026, 9, 17, 10, 0, 0, 0, time.UTC)}
+	r.entra = entra.NewProvider()
 	h := New(Deps{Store: st, Agents: r.agents, Bus: r.bus, Notify: r.notify, Azure: r.azure, Static: fs.FS(static), InstallScript: []byte("#!/bin/sh\necho hi\n"),
-		Now: func() time.Time { return r.now }, Version: "test", Log: slog.Default(), SessionTTL: time.Hour})
+		Now: func() time.Time { return r.now }, Version: "test", Log: slog.Default(), SessionTTL: time.Hour, Entra: r.entra})
 	r.srv = httptest.NewServer(h)
 	jar, _ := cookiejar.New(nil)
 	r.client = &http.Client{Jar: jar}
