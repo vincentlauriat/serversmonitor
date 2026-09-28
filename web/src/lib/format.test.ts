@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fmtAgo, fmtBps, fmtBytes, fmtPct, fmtUptime, metricLabel, pct, periodLabel } from './format';
+import { fmtAgo, fmtBps, fmtBytes, fmtPct, fmtUptime, metricLabel, pct, periodLabel, rateIncrs, rateTicks } from './format';
 
 describe('format', () => {
   it('bytes', () => {
@@ -40,5 +40,30 @@ describe('format', () => {
     expect(periodLabel('7d')).toBe('7 days');
     expect(metricLabel('status')).toBe('Offline');
     expect(metricLabel('weird')).toBe('weird');
+  });
+});
+
+describe('rateTicks', () => {
+  it('picks one unit from the largest tick, so a few KB/s never reads as 0.0 MB/s', () => {
+    expect(rateTicks([0, 2048, 4096, 6144])).toEqual(['0 KB/s', '2 KB/s', '4 KB/s', '6 KB/s']);
+    expect(rateTicks([0, 500, 1000])).toEqual(['0 B/s', '500 B/s', '1000 B/s']);
+    expect(rateTicks([0, 5 * 1048576, 10 * 1048576])).toEqual(['0 MB/s', '5 MB/s', '10 MB/s']);
+  });
+  it('adds decimals only when ticks are closer than one unit', () => {
+    expect(rateTicks([0, 512, 1024, 1536])).toEqual(['0.0 KB/s', '0.5 KB/s', '1.0 KB/s', '1.5 KB/s']);
+    expect(rateTicks([0, 0.25, 0.5])).toEqual(['0.00 B/s', '0.25 B/s', '0.50 B/s']);
+  });
+  it('copes with one tick or none', () => {
+    expect(rateTicks([3000])).toEqual(['3 KB/s']);
+    expect(rateTicks([])).toEqual([]);
+  });
+});
+
+describe('rateIncrs', () => {
+  it('steps in whole binary units, so rateTicks never needs odd decimals', () => {
+    for (const step of rateIncrs.filter((s) => s >= 1)) {
+      const labels = rateTicks([0, step, 2 * step]);
+      expect(labels.every((l) => !/\.\d{2,}/.test(l))).toBe(true);
+    }
   });
 });

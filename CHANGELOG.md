@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- The Network and Disk I/O charts labelled every tick in MB/s with one decimal, so a few KB/s read
+  as a column of "0.0 MB/s". The axis now picks one unit (B/s to GB/s) from its largest tick, steps
+  in whole binary units, and the hover values use the same readable format as the page header.
+
 ### Added
 - Several people (lot 11). Sign-in with Microsoft Entra ID (OIDC code flow with PKCE, ID token
   signature, issuer, audience, tenant, expiry and nonce all checked), for addresses an admin lists
