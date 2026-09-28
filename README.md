@@ -194,7 +194,6 @@ delete anything without a person doing it on purpose.
 - **Three channels, one of each.** A rule can go to e-mail, the webhook, Teams, or any mix, but not
   to two different Teams channels or two recipient lists.
 - **One user.** A single local admin account; Entra ID is deferred.
-- **No TLS of its own.** Put a reverse proxy in front for anything but localhost.
 - **No automatic deletion.** Every guardrail only ever alerts or, for an orphan, deletes what a
   person confirmed by name. Nothing is removed on a timer or a threshold.
 
@@ -211,6 +210,7 @@ delete anything without a person doing it on purpose.
 | 7 | Alert routing per rule | **done** |
 | 8 | Warn when a new VM's subnet cannot reach the internet | **done** |
 | 9 | A time zone per stop schedule | **done** |
+| 10 | Native TLS: certificate files or Let's Encrypt | **done** |
 
 ## Design notes
 

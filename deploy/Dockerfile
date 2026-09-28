@@ -20,7 +20,9 @@ RUN CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${VERSION}" -o /out/s
 FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build /out/smhub /smhub
-ENV SM_LISTEN=:8090 SM_DATA_DIR=/data
+# SM_LISTEN is left to the binary: :8090, or :443 once TLS is configured.
+ENV SM_DATA_DIR=/data
 VOLUME /data
-EXPOSE 8090
+# 8090 plain HTTP; 443 and 80 when SM_TLS_DOMAINS or SM_TLS_CERT is set.
+EXPOSE 8090 443 80
 ENTRYPOINT ["/smhub"]

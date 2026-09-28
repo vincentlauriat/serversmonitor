@@ -9,7 +9,12 @@ services:
     volumes: ['hub-data:/data']
     environment:
       SM_LOG_LEVEL: info
-      # Set this once the hub is served over HTTPS:
+      # Native HTTPS with Let's Encrypt: set your domain, and replace the
+      # ports above with ['443:443', '80:80']. The certificate is cached in
+      # the hub-data volume.
+      # SM_TLS_DOMAINS: hub.example.com
+      # SM_TLS_EMAIL: you@example.com
+      # Or, behind the Caddy service below instead:
       # SM_SECURE_COOKIES: 'true'
 
   # Optional: watch the machine that runs the hub. Create the host in the UI
