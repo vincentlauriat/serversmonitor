@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-28
+
+Lot 6 (cost guardrails) is in. No new Azure role is needed; the hub applies database migration 6
+by itself on first start.
+
 ### Added
 - Cost guardrails (lot 6), evaluated only after a successful sync and delivered through the
   existing alert channels, on an append-only journal of their own (`azure_guardrail_events`) that
@@ -66,4 +71,5 @@ First tagged release. Lots 1 to 5 are in; lot 6 (cost guardrails) is not.
 - `smhub-<os>-<arch>` and `smagent-<os>-<arch>` for linux/amd64, linux/arm64, darwin/amd64,
   darwin/arm64. `install.sh` downloads `smagent-<os>-<arch>` from `releases/latest/download/`.
 
+[0.6.0]: https://github.com/vincentlauriat/serversmonitor/releases/tag/v0.6.0
 [0.5.0]: https://github.com/vincentlauriat/serversmonitor/releases/tag/v0.5.0
