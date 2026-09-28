@@ -23,8 +23,10 @@ SM_DATA_DIR=./data ./bin/smhub
 
 Open <http://localhost:8090> and create the admin account. That account is the only one.
 
-For agents on other machines, put the hub behind HTTPS (Caddy, Traefik, nginx) and set
-`SM_SECURE_COOKIES=true`. Agents then connect with `wss://`. The agent refuses a plain `ws://`
+For agents on other machines, serve the hub over HTTPS. Either let it do it itself, with
+`SM_TLS_DOMAINS=hub.example.com` for a Let's Encrypt certificate (ports 443 and 80 open to the
+internet) or `SM_TLS_CERT` and `SM_TLS_KEY` for one you already have; or put it behind a reverse
+proxy (Caddy, Traefik, nginx) and set `SM_SECURE_COOKIES=true`. Agents then connect with `wss://`. The agent refuses a plain `ws://`
 to anything but the local machine unless you pass `--insecure`, because the token travels in a
 header.
 
@@ -66,9 +68,14 @@ An offline transition does not wait for that tick.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SM_LISTEN` | `:8090` | hub listen address |
-| `SM_DATA_DIR` | `./data`, `/data` in Docker | where the SQLite file lives |
-| `SM_SECURE_COOKIES` | `false` | set to `true` behind HTTPS |
+| `SM_LISTEN` | `:8090`, `:443` with TLS | hub listen address |
+| `SM_DATA_DIR` | `./data`, `/data` in Docker | where the SQLite file and the ACME cache live |
+| `SM_SECURE_COOKIES` | `false` | set to `true` behind an HTTPS proxy; automatic with native TLS |
+| `SM_TLS_DOMAINS` | — | hub: Let's Encrypt for these names (comma list) |
+| `SM_TLS_EMAIL` | — | hub: ACME contact, optional |
+| `SM_ACME_DIRECTORY` | Let's Encrypt | hub: ACME directory, e.g. staging |
+| `SM_TLS_CERT`, `SM_TLS_KEY` | — | hub: a certificate on disk, re-read when renewed |
+| `SM_HTTP_LISTEN` | `:80` with TLS | hub: redirect to HTTPS and ACME HTTP-01; `off` to disable |
 | `SM_LOG_LEVEL` | `info` | debug, info, warn, error |
 | `SM_HUB` | — | agent: hub URL |
 | `SM_TOKEN` | — | agent: the host token |

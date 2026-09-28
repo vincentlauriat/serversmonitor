@@ -482,10 +482,15 @@ Hub, read once at startup:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SM_LISTEN` | `:8090` | Listen address. |
-| `SM_DATA_DIR` | `./data` | Where the SQLite file lives. |
-| `SM_SECURE_COOKIES` | `false` | Set the Secure flag; turn on behind TLS. |
+| `SM_LISTEN` | `:8090`, `:443` with TLS | Listen address. |
+| `SM_DATA_DIR` | `./data` | Where the SQLite file lives, and the ACME cache (`acme/`). |
+| `SM_SECURE_COOKIES` | `false` | Set the Secure flag behind a TLS proxy; always on when the hub serves TLS itself. |
 | `SM_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
+| `SM_TLS_CERT`, `SM_TLS_KEY` | — | A certificate on disk, re-read when the files change. |
+| `SM_TLS_DOMAINS` | — | Comma list: ACME (Let's Encrypt) for these names. Exclusive with the files. |
+| `SM_TLS_EMAIL` | — | ACME account contact, optional. |
+| `SM_ACME_DIRECTORY` | Let's Encrypt | ACME directory URL, e.g. the staging one. |
+| `SM_HTTP_LISTEN` | `:80` with TLS | Plain listener that redirects to HTTPS and answers HTTP-01; `off` for none. |
 
 Agent, flags or environment:
 
@@ -501,7 +506,11 @@ database and editable from the interface.
 
 ## What is deliberately absent
 
-- **No TLS of its own.** A reverse proxy does it better. `SM_SECURE_COOKIES=true` behind it.
+- **TLS is optional, not the only way.** Since lot 10 the hub can serve HTTPS itself, from a
+  certificate on disk (re-read when it changes, a half-written renewal never replacing a working
+  one) or from ACME (`autocert`, TLS-ALPN-01 on the HTTPS port and HTTP-01 on the redirect
+  listener, the cache beside the database so a restart does not hit Let's Encrypt's rate limits).
+  A reverse proxy in front stays supported; `SM_SECURE_COOKIES=true` behind it.
 - **No user accounts.** One local admin. Entra ID is deferred.
 - **One channel of each kind.** Routing picks among e-mail, webhook and Teams; there are no two Teams
   channels or two recipient lists. Mute a host to silence it everywhere.

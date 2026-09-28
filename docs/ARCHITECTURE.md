@@ -512,10 +512,15 @@ Hub, lu une fois au démarrage :
 
 | Variable | Défaut | Sens |
 |---|---|---|
-| `SM_LISTEN` | `:8090` | Adresse d'écoute. |
-| `SM_DATA_DIR` | `./data` | Où vit le fichier SQLite. |
-| `SM_SECURE_COOKIES` | `false` | Pose l'attribut Secure ; à activer derrière du TLS. |
+| `SM_LISTEN` | `:8090`, `:443` avec TLS | Adresse d'écoute. |
+| `SM_DATA_DIR` | `./data` | Où vivent le fichier SQLite et le cache ACME (`acme/`). |
+| `SM_SECURE_COOKIES` | `false` | Pose l'attribut Secure derrière un proxy TLS ; toujours actif quand le hub sert le TLS lui même. |
 | `SM_LOG_LEVEL` | `info` | `debug`, `info`, `warn` ou `error`. |
+| `SM_TLS_CERT`, `SM_TLS_KEY` | — | Un certificat sur disque, relu quand les fichiers changent. |
+| `SM_TLS_DOMAINS` | — | Liste séparée par des virgules : ACME (Let's Encrypt) pour ces noms. Exclusif avec les fichiers. |
+| `SM_TLS_EMAIL` | — | Contact du compte ACME, facultatif. |
+| `SM_ACME_DIRECTORY` | Let's Encrypt | URL de l'annuaire ACME, par exemple celui de staging. |
+| `SM_HTTP_LISTEN` | `:80` avec TLS | Écoute HTTP simple qui redirige vers HTTPS et répond au HTTP-01 ; `off` pour aucune. |
 
 Agent, en options ou en environnement :
 
@@ -531,7 +536,12 @@ est dans la base et éditable depuis l'interface.
 
 ## Ce qui est délibérément absent
 
-- **Pas de TLS propre.** Un reverse proxy le fait mieux. `SM_SECURE_COOKIES=true` derrière lui.
+- **Le TLS est possible, pas obligatoire.** Depuis le lot 10 le hub peut servir le HTTPS lui même,
+  depuis un certificat sur disque (relu quand il change, un renouvellement à moitié écrit ne
+  remplaçant jamais un certificat qui marche) ou par ACME (`autocert`, TLS-ALPN-01 sur le port HTTPS
+  et HTTP-01 sur l'écoute de redirection, le cache à côté de la base pour qu'un redémarrage ne
+  touche pas aux limites de Let's Encrypt). Un reverse proxy devant reste possible ;
+  `SM_SECURE_COOKIES=true` derrière lui.
 - **Pas de comptes utilisateurs.** Un seul administrateur local. Entra ID est repoussé.
 - **Un seul canal de chaque type.** Le routage choisit parmi e-mail, webhook et Teams ; pas deux
   canaux Teams ni deux listes de destinataires. Mettre un hôte en sourdine le fait taire partout.

@@ -41,3 +41,33 @@ func TestBadLogLevel(t *testing.T) {
 		t.Fatal("want error")
 	}
 }
+
+func TestTLSModes(t *testing.T) {
+	c, err := FromEnv(env(map[string]string{"SM_TLS_CERT": "/c.pem", "SM_TLS_KEY": "/k.pem"}))
+	if err != nil || c.TLS.Mode() != "files" || c.Listen != ":443" || c.TLS.HTTPListen != ":80" || !c.Secure {
+		t.Fatalf("files: %+v %v", c, err)
+	}
+	c, err = FromEnv(env(map[string]string{"SM_TLS_DOMAINS": " Hub.Example.com, ,b.example.com", "SM_HTTP_LISTEN": "off", "SM_LISTEN": ":8443"}))
+	if err != nil || c.TLS.Mode() != "acme" || c.Listen != ":8443" || c.TLS.HTTPListen != "" {
+		t.Fatalf("acme: %+v %v", c, err)
+	}
+	if len(c.TLS.Domains) != 2 || c.TLS.Domains[0] != "hub.example.com" {
+		t.Fatalf("domains = %v", c.TLS.Domains)
+	}
+	if c, _ := FromEnv(env(nil)); c.TLS.Mode() != "" || c.TLS.HTTPListen != "" {
+		t.Fatalf("no TLS by default: %+v", c.TLS)
+	}
+}
+
+func TestTLSMisconfigurations(t *testing.T) {
+	for name, m := range map[string]map[string]string{
+		"cert without key":       {"SM_TLS_CERT": "/c.pem"},
+		"key without cert":       {"SM_TLS_KEY": "/k.pem"},
+		"files and acme":         {"SM_TLS_CERT": "/c.pem", "SM_TLS_KEY": "/k.pem", "SM_TLS_DOMAINS": "a.example"},
+		"a redirect with no TLS": {"SM_HTTP_LISTEN": ":80"},
+	} {
+		if _, err := FromEnv(env(m)); err == nil {
+			t.Errorf("%s: must be refused", name)
+		}
+	}
+}

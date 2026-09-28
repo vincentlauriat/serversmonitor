@@ -84,9 +84,10 @@ The UI is reached through the tunnel, so no password crosses the internet in cle
 ssh -N -L 8092:127.0.0.1:8090 azureuser@<public-ip>   # then http://127.0.0.1:8092
 ```
 
-The alternative, if browser-native access matters more than the extra moving part, is a TLS
-reverse proxy on the same VM with a `*.cloudapp.azure.com` DNS label. The application has no TLS
-of its own, so opening 8090 to the internet without one would send the login password in clear.
+The alternative, if browser-native access matters more than the extra moving part, is a
+`*.cloudapp.azure.com` DNS label and the hub's own TLS: `SM_TLS_DOMAINS` set to that name, ports 443
+and 80 open in the NSG, and Let's Encrypt does the rest. Opening 8090 to the internet without TLS
+would send the login password in clear.
 
 ## The credential
 

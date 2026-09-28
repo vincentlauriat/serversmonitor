@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Native TLS (lot 10). The hub can serve HTTPS itself, from a certificate on disk
+  (`SM_TLS_CERT`, `SM_TLS_KEY`), re-read when the files change, or from Let's Encrypt
+  (`SM_TLS_DOMAINS`, `SM_TLS_EMAIL`, `SM_ACME_DIRECTORY`), with TLS-ALPN-01 on the HTTPS port and
+  the cache in the data directory. With TLS on, the hub listens on `:443`, a plain listener on
+  `:80` (`SM_HTTP_LISTEN`, `off` to disable) redirects to HTTPS and answers HTTP-01, and cookies
+  are always Secure. Without these variables nothing changes. New dependency: `golang.org/x/net`,
+  through `golang.org/x/crypto/acme/autocert`.
+
 ## [0.7.0] — 2026-09-28
 
 Lots 7, 8 and 9 are in. No new Azure role is needed; the hub applies database migrations 7 to 9 by
