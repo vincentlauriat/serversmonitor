@@ -16,6 +16,39 @@ export function fmtBps(v: number | null | undefined): string {
   return fmtBytes(v) + '/s';
 }
 
+/**
+ * Labels for a rate axis. Every tick shares one unit, picked from the largest
+ * tick, so a scale reads "0 KB/s, 2 KB/s, 4 KB/s" rather than one fixed unit
+ * that turns a few KB/s into a column of "0.0 MB/s". Decimals appear only when
+ * the step between ticks needs them to be told apart.
+ */
+export function rateTicks(vals: number[]): string[] {
+  const top = Math.max(0, ...vals.map((v) => Math.abs(v)));
+  let i = 0;
+  let div = 1;
+  while (top / div >= 1024 && i < units.length - 1) {
+    div *= 1024;
+    i++;
+  }
+  const step = vals.length > 1 ? Math.abs(vals[1] - vals[0]) / div : 0;
+  // The fewest decimals that write the step exactly (0.5 needs one, 0.25
+  // two), capped at three: past that the scale is noise, not traffic.
+  let decimals = 0;
+  while (decimals < 3 && step > 0 && Math.abs(Math.round(step * 10 ** decimals) - step * 10 ** decimals) > 1e-6) {
+    decimals++;
+  }
+  return vals.map((v) => `${(v / div).toFixed(decimals)} ${units[i]}/s`);
+}
+
+/**
+ * Tick steps for a rate axis: 1, 2, 5, 10, 20, 50, 100, 200, 500 of each
+ * binary unit. Left to itself uPlot picks round decimal steps (5000 bytes),
+ * which in KB/s read as 4.883; these land on whole units instead.
+ */
+export const rateIncrs: number[] = [0.25, 0.5].concat(
+  ...[0, 1, 2, 3, 4].map((k) => [1, 2, 5, 10, 20, 50, 100, 200, 500].map((m) => m * 1024 ** k))
+);
+
 export function fmtPct(v: number | null | undefined): string {
   if (v === null || v === undefined) return '—';
   return `${v.toFixed(1)}%`;
