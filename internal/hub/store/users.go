@@ -11,10 +11,10 @@ import (
 // and changes nothing. A local account signs in with a password; an Entra
 // account only through Microsoft Entra ID, and has no password at all.
 const (
-	RoleAdmin      = "admin"
-	RoleViewer     = "viewer"
-	ProviderLocal  = "local"
-	ProviderEntra  = "entra"
+	RoleAdmin     = "admin"
+	RoleViewer    = "viewer"
+	ProviderLocal = "local"
+	ProviderEntra = "entra"
 )
 
 var (
