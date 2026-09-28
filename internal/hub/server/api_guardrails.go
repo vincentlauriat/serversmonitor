@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/vincentlauriat/serversmonitor/internal/hub/azure"
@@ -233,12 +234,17 @@ func (s *server) handlePutGuardrailSettings(w http.ResponseWriter, r *http.Reque
 // --- GET/PUT /api/v1/azure/schedules --------------------------------------
 
 type scheduleView struct {
-	ResourceID   string              `json:"resource_id"`
-	Name         string              `json:"name"`
-	OffWindows   []guardrails.Window `json:"off_windows"`
-	Enabled      bool                `json:"enabled"`
-	LastBoundary *string             `json:"last_boundary"`
-	OffNow       bool                `json:"off_now"`
+	ResourceID string              `json:"resource_id"`
+	Name       string              `json:"name"`
+	OffWindows []guardrails.Window `json:"off_windows"`
+	Enabled    bool                `json:"enabled"`
+	// Timezone is what was saved, "" for the hub-wide zone; EffectiveZone is
+	// the zone the windows are read in right now, so the page never has to
+	// know the hub setting to say it.
+	Timezone      string  `json:"timezone"`
+	EffectiveZone string  `json:"effective_timezone"`
+	LastBoundary  *string `json:"last_boundary"`
+	OffNow        bool    `json:"off_now"`
 }
 
 func (s *server) handleGetSchedules(w http.ResponseWriter, r *http.Request, _ store.User) {
@@ -256,7 +262,7 @@ func (s *server) handleGetSchedules(w http.ResponseWriter, r *http.Request, _ st
 	for _, res := range resources {
 		names[res.ID] = res.Name
 	}
-	loc := s.Azure.GuardrailSettings().Location()
+	hubLoc := s.Azure.GuardrailSettings().Location()
 	now := s.Now().UTC()
 
 	out := make([]scheduleView, 0, len(scs))
@@ -272,7 +278,9 @@ func (s *server) handleGetSchedules(w http.ResponseWriter, r *http.Request, _ st
 		if name == "" {
 			name = azure.LastSegment(sc.ResourceID)
 		}
+		loc := guardrails.ScheduleLocation(sc.Timezone, hubLoc)
 		v := scheduleView{ResourceID: sc.ResourceID, Name: name, OffWindows: ws, Enabled: sc.Enabled,
+			Timezone: sc.Timezone, EffectiveZone: loc.String(),
 			OffNow: sc.Enabled && guardrails.Off(ws, loc, now)}
 		if v.OffWindows == nil {
 			v.OffWindows = []guardrails.Window{}
@@ -290,6 +298,8 @@ type scheduleInput struct {
 	ResourceID string              `json:"resource_id"`
 	OffWindows []guardrails.Window `json:"off_windows"`
 	Enabled    bool                `json:"enabled"`
+	// Timezone is an IANA name; absent or "" follows the hub-wide zone.
+	Timezone string `json:"timezone"`
 }
 
 // handlePutSchedule stores a resource's off-hours windows. The id travels in
@@ -339,8 +349,13 @@ func (s *server) handlePutSchedule(w http.ResponseWriter, r *http.Request, _ sto
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	zone := strings.TrimSpace(in.Timezone)
+	if err := guardrails.ValidateZone(zone); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := s.Store.UpsertAzureSchedule(store.AzureSchedule{ResourceID: id,
-		OffWindows: guardrails.EncodeWindows(ws), Enabled: in.Enabled}, s.Now().UTC()); err != nil {
+		OffWindows: guardrails.EncodeWindows(ws), Enabled: in.Enabled, Timezone: zone}, s.Now().UTC()); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

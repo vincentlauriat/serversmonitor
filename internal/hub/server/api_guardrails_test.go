@@ -412,3 +412,43 @@ func TestGuardrailsEndpointsNeedASession(t *testing.T) {
 		}
 	}
 }
+
+func TestScheduleTimezoneThroughTheAPI(t *testing.T) {
+	r := newAzureRig(t)
+	if err := r.st.ReplaceAzureInventory([]string{"rg"}, []store.AzureResource{
+		{ID: "/s/site1", ARMID: "/S/site1", Name: "site1", Type: "Microsoft.Web/sites",
+			ResourceGroup: "rg", Location: "westeurope", Tags: map[string]string{}},
+	}, r.now); err != nil {
+		t.Fatal(err)
+	}
+	put := func(zone string) (int, string) {
+		resp, data := r.do(t, "PUT", "/api/v1/azure/schedules", map[string]any{"resource_id": "/s/site1",
+			"off_windows": []map[string]any{{"days": []int{1}, "from": "20:00", "to": "07:00"}}, "enabled": true, "timezone": zone})
+		return resp.StatusCode, string(data)
+	}
+	for _, bad := range []string{"Paris", "Local"} {
+		if code, data := put(bad); code != http.StatusBadRequest || !strings.Contains(data, "time zone") {
+			t.Errorf("%q: %d %s", bad, code, data)
+		}
+	}
+	get := func() map[string]any {
+		_, data := r.do(t, "GET", "/api/v1/azure/schedules", nil)
+		var list map[string][]map[string]any
+		json.Unmarshal(data, &list)
+		return list["schedules"][0]
+	}
+	if code, data := put("America/New_York"); code != http.StatusNoContent {
+		t.Fatalf("put = %d %s", code, data)
+	}
+	if s := get(); s["timezone"] != "America/New_York" || s["effective_timezone"] != "America/New_York" {
+		t.Fatalf("own zone: %v", s)
+	}
+	if code, _ := put(""); code != http.StatusNoContent {
+		t.Fatal("clearing the zone must be accepted")
+	}
+	s := get()
+	want := r.azure.GuardrailSettings().Location().String()
+	if s["timezone"] != "" || s["effective_timezone"] != want {
+		t.Fatalf("no zone must show the hub's (%s): %v", want, s)
+	}
+}

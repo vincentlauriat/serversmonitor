@@ -341,8 +341,9 @@ au lot 1. Chaque ligne qu'il écrit devient un `notify.Message` remis au dispatc
 second chemin de livraison, aucune seconde politique de reprise, aucun canal propre aux guardrails.
 
 Les plages d'arrêt suivent le même journal mais un déclencheur différent : le tic à la minute
-demande, pour chaque plage activée, si la dernière limite de fenêtre franchie (dans le fuseau
-configuré) est plus récente que le `last_boundary` déjà enregistré. Si oui, exactement une action du
+demande, pour chaque plage activée, si la dernière limite de fenêtre franchie (dans le fuseau propre
+à la plage si elle en a un, sinon dans `azure_timezone`, relu à chaque tic pour qu'une plage sans
+fuseau propre suive un changement du réglage) est plus récente que le `last_boundary` déjà enregistré. Si oui, exactement une action du
 lot 4 est émise — `stop` pour un site, `deallocate` pour une VM au début de la plage, `start` à sa
 fin — avec `origin=schedule`, en partageant le verrou en vol d'`azure_actions` avec les actions
 manuelles. Une action planifiée qui échoue journalise `schedule_failed` pour cette ressource plutôt

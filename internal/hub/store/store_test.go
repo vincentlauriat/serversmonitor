@@ -18,8 +18,8 @@ func TestOpenAppliesMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 8 {
-		t.Fatalf("schema version = %d, want 8", v)
+	if v != 9 {
+		t.Fatalf("schema version = %d, want 9", v)
 	}
 	for _, table := range []string{"hosts", "samples", "samples_10m", "samples_1h", "samples_1d", "containers", "container_samples", "alert_rules", "alert_events", "deliveries", "azure_resources", "azure_costs", "azure_sync", "azure_actions", "azure_provisions", "azure_provision_resources", "azure_guardrail_events", "azure_schedules", "users", "sessions", "settings"} {
 		var n int
@@ -62,7 +62,7 @@ func TestOpenTwiceIsIdempotent(t *testing.T) {
 		t.Fatalf("second open: %v", err)
 	}
 	defer s2.Close()
-	if v, _ := s2.SchemaVersion(); v != 8 {
+	if v, _ := s2.SchemaVersion(); v != 9 {
 		t.Fatalf("version after reopen = %d", v)
 	}
 }

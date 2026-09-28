@@ -108,6 +108,38 @@ func (c Settings) Validate() error {
 	return nil
 }
 
+// ScheduleLocation is the zone one schedule is evaluated in: its own when it
+// has one, the hub-wide zone otherwise. A zone that no longer loads falls back
+// to the hub's, never to UTC: the hub's zone is at least the one a person
+// chose for schedules. ValidateZone refuses an unknown zone before it is
+// stored, so reaching that fallback takes a hand-edited row.
+func ScheduleLocation(zone string, hub *time.Location) *time.Location {
+	if zone == "" {
+		return hub
+	}
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		return hub
+	}
+	return loc
+}
+
+// ValidateZone accepts "" (the hub-wide zone) or an IANA name. "Local" is
+// refused: it would mean the zone of whatever machine the hub runs on, which
+// is exactly the ambiguity a per-schedule zone exists to remove.
+func ValidateZone(zone string) error {
+	if zone == "" {
+		return nil
+	}
+	if zone == "Local" {
+		return fmt.Errorf("time zone %q is the hub machine's own; use an IANA name such as America/New_York", zone)
+	}
+	if _, err := time.LoadLocation(zone); err != nil {
+		return fmt.Errorf("unknown time zone %q; use an IANA name such as America/New_York", zone)
+	}
+	return nil
+}
+
 // Location never returns nil.
 //
 // The UTC fallback is defensive, not an observable error path, and nothing

@@ -176,7 +176,7 @@ Azure refuses to read in detail (403) is shown as "not verified", never as healt
 unverified resource can never be deleted from the page, whatever its type would otherwise allow. It
 refuses to guess: a read that fails is not a clean bill of health.
 
-**Stop schedules.** Off windows in one time zone for the whole hub. The hub only acts when a window
+**Stop schedules.** Off windows in the hub's time zone, or in one of the schedule's own. The hub only acts when a window
 boundary is crossed, and it advances its record of the boundary before calling Azure, so a crash
 loses the action rather than repeating it. A machine switched on by hand inside its window stays on
 until the next boundary. It refuses to fight a person, and it refuses to enforce continuously.
@@ -197,8 +197,6 @@ delete anything without a person doing it on purpose.
 - **No TLS of its own.** Put a reverse proxy in front for anything but localhost.
 - **No automatic deletion.** Every guardrail only ever alerts or, for an orphan, deletes what a
   person confirmed by name. Nothing is removed on a timer or a threshold.
-- **One time zone.** Every stop schedule shares one hub-wide zone; per-schedule zones are not
-  supported.
 
 ## Roadmap
 
@@ -212,6 +210,7 @@ delete anything without a person doing it on purpose.
 | 6 | Cost guardrails: schedules, orphans, budget alerts | **done** |
 | 7 | Alert routing per rule | **done** |
 | 8 | Warn when a new VM's subnet cannot reach the internet | **done** |
+| 9 | A time zone per stop schedule | **done** |
 
 ## Design notes
 

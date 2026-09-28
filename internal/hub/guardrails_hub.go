@@ -216,11 +216,12 @@ func (h *Hub) runSchedules(now time.Time, maxAge time.Duration) {
 		h.log.Error("schedules: list", "err", err)
 		return
 	}
-	loc := h.GuardrailSettings().Location()
+	hubLoc := h.GuardrailSettings().Location()
 	for _, sc := range scs {
 		if !sc.Enabled {
 			continue
 		}
+		loc := guardrails.ScheduleLocation(sc.Timezone, hubLoc)
 		ws, err := guardrails.ParseWindows(sc.OffWindows)
 		if err != nil || len(ws) == 0 {
 			continue

@@ -32,6 +32,8 @@
     toggledDays,
     validWindows,
     windowsSavable,
+    scheduleSummary,
+    timeZones,
     windowsSummary
   } from '$lib/guardrails';
   import { fmtAgo } from '$lib/format';
@@ -62,6 +64,9 @@
   let editingSchedule = $state<string | null>(null);
   let editWindows = $state<Window[]>([]);
   let editEnabled = $state(true);
+  // '' follows the hub-wide zone; anything else is an IANA name of its own.
+  let editZone = $state('');
+  const zones = timeZones();
   let scheduleErr = $state('');
   let savingSchedule = $state(false);
 
@@ -78,6 +83,7 @@
     // keeps every such window visible the moment the editor opens.
     editWindows = existing ? editableWindows(existing.off_windows).map((w) => ({ ...w, days: [...w.days] })) : [];
     editEnabled = existing?.enabled ?? true;
+    editZone = existing?.timezone ?? '';
     scheduleErr = '';
   }
 
@@ -93,7 +99,12 @@
     scheduleErr = '';
     savingSchedule = true;
     try {
-      await api.put('/api/v1/azure/schedules', { resource_id: resourceID, off_windows: editWindows, enabled: editEnabled });
+      await api.put('/api/v1/azure/schedules', {
+        resource_id: resourceID,
+        off_windows: editWindows,
+        enabled: editEnabled,
+        timezone: editZone.trim()
+      });
       editingSchedule = null;
       await loadSchedules();
     } catch (e) {
@@ -415,7 +426,7 @@
                   {#if actionsFor(r.type).includes('stop') && !r.deleted}
                     <button
                       class="rounded p-1 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                      title={sched?.enabled ? windowsSummary(sched.off_windows) : 'no schedule'}
+                      title={sched?.enabled ? scheduleSummary(sched) : 'no schedule'}
                       onclick={() => openScheduleEditor(r.id, sched)}
                     >
                       <span class:text-emerald-600={sched?.enabled} class:text-zinc-400={!sched?.enabled}>⏰</span>
@@ -428,10 +439,24 @@
                   <td colspan="9" class="px-3 py-3">
                     <div class="flex flex-wrap items-center justify-between gap-2">
                       <span class="text-sm font-medium">Schedule for {r.name}</span>
-                      <label class="flex items-center gap-1 text-xs">
-                        <input type="checkbox" bind:checked={editEnabled} /> enabled
-                      </label>
+                      <div class="flex flex-wrap items-center gap-3 text-xs">
+                        <label class="flex items-center gap-1">
+                          Time zone
+                          <input
+                            class="w-48 rounded border border-zinc-300 px-1 py-0.5 dark:border-zinc-700 dark:bg-zinc-800"
+                            list="schedule-zones"
+                            bind:value={editZone}
+                            placeholder={sched && !sched.timezone ? `hub zone (${sched.effective_timezone})` : 'hub zone'}
+                          />
+                        </label>
+                        <label class="flex items-center gap-1">
+                          <input type="checkbox" bind:checked={editEnabled} /> enabled
+                        </label>
+                      </div>
                     </div>
+                    <datalist id="schedule-zones">
+                      {#each zones as z (z)}<option value={z}></option>{/each}
+                    </datalist>
                     <div class="mt-2 space-y-2">
                       {#each editWindows as w, i (i)}
                         <div class="flex flex-wrap items-center gap-2 text-xs">

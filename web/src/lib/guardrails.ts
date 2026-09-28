@@ -236,3 +236,23 @@ export function orphanLabel(reason: string): string {
 export function canDeleteOrphan(o: { reason: string; deletable: boolean }): boolean {
   return o.deletable && o.reason !== 'unverified';
 }
+
+/**
+ * The IANA zones this browser knows, for the schedule editor's suggestions.
+ * Empty where Intl cannot list them: the field still takes any name, and the
+ * hub is what validates it.
+ */
+export function timeZones(): string[] {
+  const intl = Intl as unknown as { supportedValuesOf?: (key: string) => string[] };
+  try {
+    return intl.supportedValuesOf?.('timeZone') ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** The tooltip on a schedule: its windows, and its zone when it has its own. */
+export function scheduleSummary(s: { off_windows: Window[]; timezone: string }): string {
+  const w = windowsSummary(s.off_windows);
+  return s.timezone ? `${w} (${s.timezone})` : w;
+}

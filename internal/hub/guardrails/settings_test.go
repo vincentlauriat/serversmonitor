@@ -64,3 +64,24 @@ func TestLocationNeverNil(t *testing.T) {
 		t.Fatal("known zone")
 	}
 }
+
+func TestScheduleLocation(t *testing.T) {
+	paris, _ := time.LoadLocation("Europe/Paris")
+	if ScheduleLocation("", paris) != paris {
+		t.Fatal("no zone of its own follows the hub's")
+	}
+	if ScheduleLocation("America/New_York", paris).String() != "America/New_York" {
+		t.Fatal("its own zone wins")
+	}
+	if ScheduleLocation("Nowhere/Nowhere", paris) != paris {
+		t.Fatal("an unreadable zone falls back to the hub's, never to UTC")
+	}
+}
+
+func TestValidateZone(t *testing.T) {
+	for zone, ok := range map[string]bool{"": true, "Asia/Tokyo": true, "UTC": true, "Local": false, "Paris": false} {
+		if err := ValidateZone(zone); (err == nil) != ok {
+			t.Errorf("%q: err = %v, want ok = %v", zone, err, ok)
+		}
+	}
+}
