@@ -9,9 +9,12 @@ import (
 // loop rather than by a person. LastBoundary is nil until the schedule has
 // ever crossed a window boundary the loop acted on.
 type AzureSchedule struct {
-	ResourceID    string
-	OffWindows    string // JSON, opaque to the store
-	Enabled       bool
+	ResourceID string
+	OffWindows string // JSON, opaque to the store
+	Enabled    bool
+	// Timezone is an IANA name, or "" for the hub-wide zone, which is then
+	// read at every evaluation rather than copied here.
+	Timezone      string
 	LastBoundary  *time.Time
 	LastAppliedAt *time.Time
 	CreatedAt     time.Time
@@ -23,11 +26,12 @@ type AzureSchedule struct {
 // replay the action the agent loop already took at the last boundary.
 func (s *Store) UpsertAzureSchedule(sc AzureSchedule, now time.Time) error {
 	ts := fmtTime(now)
-	_, err := s.db.Exec(`INSERT INTO azure_schedules (resource_id, off_windows, enabled, created_at, updated_at)
-		VALUES (?,?,?,?,?)
+	_, err := s.db.Exec(`INSERT INTO azure_schedules (resource_id, off_windows, enabled, timezone, created_at, updated_at)
+		VALUES (?,?,?,?,?,?)
 		ON CONFLICT(resource_id) DO UPDATE SET
-		  off_windows = excluded.off_windows, enabled = excluded.enabled, updated_at = excluded.updated_at`,
-		sc.ResourceID, sc.OffWindows, boolInt(sc.Enabled), ts, ts)
+		  off_windows = excluded.off_windows, enabled = excluded.enabled, timezone = excluded.timezone,
+		  updated_at = excluded.updated_at`,
+		sc.ResourceID, sc.OffWindows, boolInt(sc.Enabled), sc.Timezone, ts, ts)
 	return err
 }
 
@@ -44,7 +48,7 @@ func (s *Store) DeleteAzureSchedule(resourceID string) error {
 }
 
 func (s *Store) ListAzureSchedules() ([]AzureSchedule, error) {
-	rows, err := s.db.Query(`SELECT resource_id, off_windows, enabled, last_boundary, last_applied_at, created_at, updated_at
+	rows, err := s.db.Query(`SELECT resource_id, off_windows, enabled, timezone, last_boundary, last_applied_at, created_at, updated_at
 		FROM azure_schedules ORDER BY resource_id`)
 	if err != nil {
 		return nil, err
@@ -56,7 +60,7 @@ func (s *Store) ListAzureSchedules() ([]AzureSchedule, error) {
 		var enabled int
 		var lb, la sql.NullString
 		var created, updated string
-		if err := rows.Scan(&sc.ResourceID, &sc.OffWindows, &enabled, &lb, &la, &created, &updated); err != nil {
+		if err := rows.Scan(&sc.ResourceID, &sc.OffWindows, &enabled, &sc.Timezone, &lb, &la, &created, &updated); err != nil {
 			return nil, err
 		}
 		sc.Enabled = enabled == 1

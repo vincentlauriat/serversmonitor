@@ -265,6 +265,10 @@ export interface Schedule {
   name: string;
   off_windows: Window[];
   enabled: boolean;
+  /** An IANA zone of its own, or '' to follow the hub-wide zone. */
+  timezone: string;
+  /** The zone the windows are read in right now, whichever of the two. */
+  effective_timezone: string;
   last_boundary: string | null;
   off_now: boolean;
 }

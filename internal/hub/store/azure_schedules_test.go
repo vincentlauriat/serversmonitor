@@ -110,3 +110,21 @@ func TestActionOriginIsStoredAndListed(t *testing.T) {
 		t.Fatalf("default origin = %q", as[0].Origin)
 	}
 }
+
+func TestScheduleTimezoneRoundTrip(t *testing.T) {
+	s := openTest(t)
+	now := time.Date(2026, 9, 23, 8, 0, 0, 0, time.UTC)
+	id := "/subscriptions/x/sites/a"
+	if err := s.UpsertAzureSchedule(AzureSchedule{ResourceID: id, OffWindows: `[]`, Enabled: true}, now); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := s.ListAzureSchedules(); list[0].Timezone != "" {
+		t.Fatalf("no zone given reads back as the hub's, got %q", list[0].Timezone)
+	}
+	if err := s.UpsertAzureSchedule(AzureSchedule{ResourceID: id, OffWindows: `[]`, Enabled: true, Timezone: "Asia/Tokyo"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := s.ListAzureSchedules(); list[0].Timezone != "Asia/Tokyo" {
+		t.Fatalf("an edit must change the zone, got %q", list[0].Timezone)
+	}
+}

@@ -416,3 +416,32 @@ func TestDeleteOrphanRefusesAnEmptyStoredName(t *testing.T) {
 		t.Fatalf("nothing should have been deleted: %d delete(s)", n)
 	}
 }
+
+// A schedule with its own zone is read in that zone, whatever the hub-wide
+// one says: 20:00 in New York is 00:00 UTC the next day, not 20:00 UTC.
+func TestAScheduleWithItsOwnZoneFollowsIt(t *testing.T) {
+	f := newAzureFake(t, "site1")
+	h := azureHub(t, f)
+	_ = h.st.SetSetting("azure_timezone", "UTC")
+	h.ReloadAzure()
+	h.syncAzureInventory(context.Background())
+	if err := h.st.UpsertAzureSchedule(store.AzureSchedule{ResourceID: f.id("site1"),
+		OffWindows: guardrails.EncodeWindows(guardrails.EveningsAndWeekends), Enabled: true,
+		Timezone: "America/New_York"}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	// Wednesday 20:30 UTC is 16:30 in New York: after the 07:00 start
+	// boundary of the morning, so the last boundary is a start. Mark it as
+	// already seen by applying once, which issues that start.
+	h.applySchedules(time.Date(2026, 9, 23, 20, 30, 0, 0, time.UTC))
+	f.waitActions(t, 1)
+	if as, _ := h.st.ListAzureActions(5); as[0].Action != "start" {
+		t.Fatalf("16:30 in New York is inside business hours, got %+v", as[0])
+	}
+	// Thursday 00:01 UTC is Wednesday 20:01 in New York: the stop boundary.
+	h.applySchedules(time.Date(2026, 9, 24, 0, 1, 0, 0, time.UTC))
+	f.waitActions(t, 2)
+	if as, _ := h.st.ListAzureActions(5); as[0].Action != "stop" {
+		t.Fatalf("20:01 in New York must stop, got %+v", as[0])
+	}
+}

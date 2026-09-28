@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- A time zone per stop schedule (lot 9). A schedule can carry its own IANA zone; without one it
+  follows the hub-wide zone, read at each tick, which is what every existing schedule keeps doing
+  after migration 9. An unknown zone, or `Local`, is refused on save. `timezone` and
+  `effective_timezone` on `/api/v1/azure/schedules`; the schedule editor has a zone field with the
+  browser's zones as suggestions.
 - Outbound access check for new VMs (lot 8). The hub reads the configured subnet's outbound access
   from the VNet read it already makes (NAT Gateway, `defaultOutboundAccess`, route table), with no
   new role. It is shown next to Create VM, recorded on each run (migration 8), and a VM whose agent

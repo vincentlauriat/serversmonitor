@@ -327,7 +327,9 @@ single writer: only transitions are stored, exactly as in lot 1. Every line it w
 policy, no guardrail-specific channel.
 
 Stop schedules follow the same journal but a different trigger: the minute tick asks, for every
-enabled schedule, whether the most recent window boundary (in the configured zone) is more recent
+enabled schedule, whether the most recent window boundary (in the schedule's own zone if it has
+one, the hub-wide `azure_timezone` otherwise, read at each tick so a schedule without its own zone
+follows a change of the setting) is more recent
 than the `last_boundary` already recorded. If so, exactly one lot 4 action is issued —
 `stop` for a site, `deallocate` for a VM at a window start, `start` at a window end — with
 `origin=schedule`, sharing the in-flight lock of `azure_actions` with manual actions. A scheduled

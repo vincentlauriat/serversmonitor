@@ -11,7 +11,9 @@ import {
   parseThresholds,
   projectionFiring,
   projectionText,
+  scheduleSummary,
   thresholdMarks,
+  timeZones,
   toggledDays,
   validWindows,
   windowsSavable,
@@ -246,5 +248,20 @@ describe('canDeleteOrphan', () => {
     // not leak a working-looking Delete button here: unverified is checked
     // independently of whatever the server sent.
     expect(canDeleteOrphan(orphan({ deletable: true, reason: 'unverified' }))).toBe(false);
+  });
+});
+
+describe('schedule time zones', () => {
+  const ws: Window[] = [{ days: [1, 2, 3, 4, 5], from: '20:00', to: '07:00' }];
+  it('names the zone only when the schedule has its own', () => {
+    expect(scheduleSummary({ off_windows: ws, timezone: '' })).toBe(windowsSummary(ws));
+    expect(scheduleSummary({ off_windows: ws, timezone: 'America/New_York' })).toBe(
+      `${windowsSummary(ws)} (America/New_York)`
+    );
+  });
+  it('lists the zones the browser knows, or nothing', () => {
+    const z = timeZones();
+    expect(Array.isArray(z)).toBe(true);
+    if (z.length > 0) expect(z).toContain('Europe/Paris');
   });
 });
