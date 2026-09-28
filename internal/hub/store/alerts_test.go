@@ -81,3 +81,41 @@ func TestLastEventPerKeySeparatesHosts(t *testing.T) {
 		t.Fatalf("one host's event must not shadow another's: %+v", last)
 	}
 }
+
+// NULL and the empty string are two different routes, every channel and no channel, and a
+// round trip through the store must not fold one into the other.
+func TestRuleChannelsRoundTrip(t *testing.T) {
+	s := openTest(t)
+	all, _ := s.CreateRule(Rule{Metric: "cpu", Threshold: 90, Duration: time.Minute}, t0)
+	none, _ := s.CreateRule(Rule{Metric: "cpu", Threshold: 90, Duration: time.Minute, Channels: []string{}}, t0)
+	some, _ := s.CreateRule(Rule{Metric: "cpu", Threshold: 90, Duration: time.Minute, Channels: []string{"smtp", "teams"}}, t0)
+	got := map[int64][]string{}
+	isNil := map[int64]bool{}
+	rules, err := s.ListRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rules {
+		got[r.ID], isNil[r.ID] = r.Channels, r.Channels == nil
+	}
+	if !isNil[all.ID] {
+		t.Fatalf("no route must read back as nil, got %#v", got[all.ID])
+	}
+	if isNil[none.ID] || len(got[none.ID]) != 0 {
+		t.Fatalf("empty route must read back as empty, not nil: %#v", got[none.ID])
+	}
+	if len(got[some.ID]) != 2 || got[some.ID][0] != "smtp" || got[some.ID][1] != "teams" {
+		t.Fatalf("route = %#v", got[some.ID])
+	}
+
+	some.Channels = nil
+	if err := s.UpdateRule(some); err != nil {
+		t.Fatal(err)
+	}
+	rules, _ = s.ListRules()
+	for _, r := range rules {
+		if r.ID == some.ID && r.Channels != nil {
+			t.Fatalf("update to every channel lost: %#v", r.Channels)
+		}
+	}
+}

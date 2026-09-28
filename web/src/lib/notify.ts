@@ -43,3 +43,35 @@ export function healthLabel(h: NotifyHealth | undefined): string {
   if (h.state === 'pending') return 'delivery in flight';
   return `last delivery failed: ${h.last_error ?? 'no reason given'}`;
 }
+
+/** Every channel the hub knows, in the order the server normalises routes to. */
+export const CHANNELS: [string, string][] = [
+  ['smtp', 'Email'],
+  ['webhook', 'Webhook'],
+  ['teams', 'Teams']
+];
+
+/** The channels switched on in the saved notification settings. */
+export function enabledChannels(v: Notifications): string[] {
+  const on: Record<string, boolean> = { smtp: v.smtp_enabled, webhook: v.webhook_enabled, teams: v.teams_enabled };
+  return CHANNELS.map(([k]) => k).filter((k) => on[k]);
+}
+
+/**
+ * Says where a route sends things. A channel named but switched off is kept in
+ * the route, so it is shown, marked "(off)": the rule is not broken, it is
+ * waiting for that channel.
+ */
+export function routeLabel(route: string[] | null, enabled: string[]): string {
+  if (route === null) return 'All channels';
+  if (route.length === 0) return 'None';
+  return CHANNELS.filter(([k]) => route.includes(k))
+    .map(([k, label]) => (enabled.includes(k) ? label : `${label} (off)`))
+    .join(', ');
+}
+
+/** Adds or removes one channel, keeping the channel order. */
+export function toggleChannel(route: string[], channel: string): string[] {
+  const next = route.includes(channel) ? route.filter((c) => c !== channel) : [...route, channel];
+  return CHANNELS.map(([k]) => k).filter((k) => next.includes(k));
+}

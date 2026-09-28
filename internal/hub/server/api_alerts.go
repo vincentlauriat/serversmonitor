@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/vincentlauriat/serversmonitor/internal/hub/notify"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 )
 
@@ -16,10 +17,13 @@ type ruleView struct {
 	Metric      string  `json:"metric"`
 	Threshold   float64 `json:"threshold"`
 	DurationSec int64   `json:"duration_sec"`
+	// Channels is null for every enabled channel, [] for none.
+	Channels []string `json:"channels"`
 }
 
 func toRuleView(r store.Rule) ruleView {
-	return ruleView{ID: r.ID, HostID: r.HostID, Metric: r.Metric, Threshold: r.Threshold, DurationSec: int64(r.Duration / time.Second)}
+	return ruleView{ID: r.ID, HostID: r.HostID, Metric: r.Metric, Threshold: r.Threshold,
+		DurationSec: int64(r.Duration / time.Second), Channels: r.Channels}
 }
 
 type eventView struct {
@@ -105,19 +109,30 @@ func (s *server) handleAlertEvents(w http.ResponseWriter, r *http.Request, _ sto
 	writeJSON(w, http.StatusOK, toEventViews(evs, names))
 }
 
-func (s *server) readRule(w http.ResponseWriter, r *http.Request) (store.Rule, bool) {
+// readRule answers the rule in the body, or the sentence a 400 carries.
+func (s *server) readRule(w http.ResponseWriter, r *http.Request) (store.Rule, string) {
 	var body ruleView
-	if err := readJSON(w, r, &body); err != nil || !validMetrics[body.Metric] || body.DurationSec < 0 {
-		return store.Rule{}, false
+	if err := readJSON(w, r, &body); err != nil {
+		return store.Rule{}, "invalid rule"
+	}
+	if !validMetrics[body.Metric] {
+		return store.Rule{}, "metric must be one of cpu, memory, disk, load, temperature, bandwidth"
+	}
+	if body.DurationSec < 0 {
+		return store.Rule{}, "duration must not be negative"
+	}
+	channels, err := notify.NormalizeRoute(body.Channels)
+	if err != nil {
+		return store.Rule{}, err.Error()
 	}
 	return store.Rule{HostID: body.HostID, Metric: body.Metric, Threshold: body.Threshold,
-		Duration: time.Duration(body.DurationSec) * time.Second}, true
+		Duration: time.Duration(body.DurationSec) * time.Second, Channels: channels}, ""
 }
 
 func (s *server) handleCreateRule(w http.ResponseWriter, r *http.Request, _ store.User) {
-	rule, ok := s.readRule(w, r)
-	if !ok {
-		writeErr(w, http.StatusBadRequest, "metric must be one of cpu, memory, disk, load, temperature, bandwidth")
+	rule, bad := s.readRule(w, r)
+	if bad != "" {
+		writeErr(w, http.StatusBadRequest, bad)
 		return
 	}
 	created, err := s.Store.CreateRule(rule, s.Now())
@@ -134,9 +149,9 @@ func (s *server) handleUpdateRule(w http.ResponseWriter, r *http.Request, _ stor
 		writeErr(w, http.StatusBadRequest, "bad id")
 		return
 	}
-	rule, ok := s.readRule(w, r)
-	if !ok {
-		writeErr(w, http.StatusBadRequest, "invalid rule")
+	rule, bad := s.readRule(w, r)
+	if bad != "" {
+		writeErr(w, http.StatusBadRequest, bad)
 		return
 	}
 	rule.ID = id

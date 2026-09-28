@@ -2,18 +2,49 @@ package store
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 )
 
 // Rule fires when its metric goes above Threshold for Duration.
 // HostID nil means the rule applies to every host.
+//
+// Channels nil means every enabled channel; an empty, non-nil slice means no
+// channel at all. The two are different answers and the column keeps them
+// apart as NULL and the empty string.
 type Rule struct {
 	ID        int64
 	HostID    *int64
 	Metric    string
 	Threshold float64
 	Duration  time.Duration
+	Channels  []string
 	CreatedAt time.Time
+}
+
+// encodeChannels is the storage form of a route: NULL for every channel, the
+// empty string for none, a comma list otherwise.
+func encodeChannels(c []string) sql.NullString {
+	if c == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: strings.Join(c, ","), Valid: true}
+}
+
+// decodeChannels is encodeChannels read back. It never returns nil for a
+// valid string, so the empty string stays "no channel" and never becomes
+// "every channel".
+func decodeChannels(v sql.NullString) []string {
+	if !v.Valid {
+		return nil
+	}
+	out := []string{}
+	for _, p := range strings.Split(v.String, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // AlertEvent is one transition. Only fired and resolved are ever stored.
@@ -28,8 +59,8 @@ type AlertEvent struct {
 }
 
 func (s *Store) CreateRule(r Rule, now time.Time) (Rule, error) {
-	res, err := s.db.Exec(`INSERT INTO alert_rules(host_id, metric, threshold, duration_sec, created_at) VALUES (?,?,?,?,?)`,
-		r.HostID, r.Metric, r.Threshold, int64(r.Duration/time.Second), fmtTime(now))
+	res, err := s.db.Exec(`INSERT INTO alert_rules(host_id, metric, threshold, duration_sec, channels, created_at) VALUES (?,?,?,?,?,?)`,
+		r.HostID, r.Metric, r.Threshold, int64(r.Duration/time.Second), encodeChannels(r.Channels), fmtTime(now))
 	if err != nil {
 		return r, err
 	}
@@ -39,8 +70,8 @@ func (s *Store) CreateRule(r Rule, now time.Time) (Rule, error) {
 }
 
 func (s *Store) UpdateRule(r Rule) error {
-	return s.execOne(`UPDATE alert_rules SET host_id=?, metric=?, threshold=?, duration_sec=? WHERE id=?`,
-		r.HostID, r.Metric, r.Threshold, int64(r.Duration/time.Second), r.ID)
+	return s.execOne(`UPDATE alert_rules SET host_id=?, metric=?, threshold=?, duration_sec=?, channels=? WHERE id=?`,
+		r.HostID, r.Metric, r.Threshold, int64(r.Duration/time.Second), encodeChannels(r.Channels), r.ID)
 }
 
 func (s *Store) DeleteRule(id int64) error {
@@ -48,7 +79,7 @@ func (s *Store) DeleteRule(id int64) error {
 }
 
 func (s *Store) ListRules() ([]Rule, error) {
-	rows, err := s.db.Query(`SELECT id, host_id, metric, threshold, duration_sec, created_at FROM alert_rules ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, host_id, metric, threshold, duration_sec, channels, created_at FROM alert_rules ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -58,8 +89,9 @@ func (s *Store) ListRules() ([]Rule, error) {
 		var r Rule
 		var hostID sql.NullInt64
 		var sec int64
+		var channels sql.NullString
 		var created string
-		if err := rows.Scan(&r.ID, &hostID, &r.Metric, &r.Threshold, &sec, &created); err != nil {
+		if err := rows.Scan(&r.ID, &hostID, &r.Metric, &r.Threshold, &sec, &channels, &created); err != nil {
 			return nil, err
 		}
 		if hostID.Valid {
@@ -67,6 +99,7 @@ func (s *Store) ListRules() ([]Rule, error) {
 			r.HostID = &v
 		}
 		r.Duration = time.Duration(sec) * time.Second
+		r.Channels = decodeChannels(channels)
 		if r.CreatedAt, err = parseTime(created); err != nil {
 			return nil, err
 		}

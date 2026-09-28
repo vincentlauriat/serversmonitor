@@ -16,8 +16,10 @@ func TestConfigRoundTrip(t *testing.T) {
 		Public: "https://hub.example",
 		SMTP: SMTPConfig{Enabled: true, Host: "smtp.example", Port: 587, Username: "u", Password: "p",
 			From: "hub@example", To: []string{"a@example", "b@example"}, TLSMode: "starttls"},
-		Webhook: WebhookConfig{Enabled: true, URL: "https://ntfy.example/sm", Headers: map[string]string{"Authorization": "Bearer t"}},
-		Teams:   TeamsConfig{Enabled: true, URL: "https://api.powerautomate.com/x"},
+		Webhook:        WebhookConfig{Enabled: true, URL: "https://ntfy.example/sm", Headers: map[string]string{"Authorization": "Bearer t"}},
+		Teams:          TeamsConfig{Enabled: true, URL: "https://api.powerautomate.com/x"},
+		OfflineRoute:   []string{"smtp", "teams"},
+		GuardrailRoute: []string{},
 	}
 	st := fakeSettings{}
 	if err := SaveConfig(st, want); err != nil {
@@ -102,5 +104,26 @@ func TestRootIsTheDashboardNotAHostPage(t *testing.T) {
 	}
 	if got := (Config{}).Root(); got != "" {
 		t.Fatalf("no public url means no link, got %q", got)
+	}
+}
+
+// A hub upgraded from before routing has no route setting: it must keep
+// sending everything everywhere, which a nil route means.
+func TestRoutesDefaultToEveryChannel(t *testing.T) {
+	c := LoadConfig(fakeSettings{})
+	if c.OfflineRoute != nil || c.GuardrailRoute != nil {
+		t.Fatalf("absent routes must be nil, got %#v %#v", c.OfflineRoute, c.GuardrailRoute)
+	}
+	st := fakeSettings{}
+	if err := SaveConfig(st, c); err != nil {
+		t.Fatal(err)
+	}
+	if again := LoadConfig(st); again.OfflineRoute != nil || again.GuardrailRoute != nil {
+		t.Fatalf("a saved nil route must read back nil, got %#v %#v", again.OfflineRoute, again.GuardrailRoute)
+	}
+	// A hand-edited setting naming a channel that does not exist over-notifies
+	// rather than going quiet.
+	if c := LoadConfig(fakeSettings{"notify_route_offline": "smtp,pager"}); c.OfflineRoute != nil {
+		t.Fatalf("an unreadable route must fall back to every channel, got %#v", c.OfflineRoute)
 	}
 }

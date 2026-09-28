@@ -125,7 +125,7 @@ lexical order is chronological order.
 | `samples` | Raw samples. |
 | `samples_10m`, `samples_1h`, `samples_1d` | Rolled-up averages. |
 | `containers`, `container_samples` | Docker containers and their series. |
-| `alert_rules` | Metric, threshold, duration, optional host. |
+| `alert_rules` | Metric, threshold, duration, optional host, channels (`NULL` = all). |
 | `alert_events` | Append-only log of `fired` and `resolved` transitions, for a host. |
 | `azure_guardrail_events` | The same append-only shape as `alert_events`, for a subject that is not a host: `budget`, or a resource's lowercased ARM id. |
 | `deliveries` | One row per (event, channel): `pending`, `sent` or `failed`. Points at exactly one of `alert_events` or `azure_guardrail_events` — a `CHECK` enforces that it is never both and never neither. |
@@ -177,7 +177,17 @@ truthful.
 
 ## Notifications
 
-`notify` renders a `Message` once and hands it to each enabled `Channel`, a one-method interface.
+`notify` renders a `Message` once and hands it to each enabled `Channel` the event is routed to, a
+one-method interface.
+
+**Routing.** Each rule names the channels it notifies (`alert_rules.channels`): `NULL` is every
+enabled channel, which is what every rule created before lot 7 still does; an empty string is no
+channel, the alert fires and shows and tells nobody; otherwise a comma list. The offline rule and
+the guardrails have no row, so their routes are two settings, `notify_route_offline` and
+`notify_route_guardrails`, with `*` for every channel. A route naming a channel that is off is kept
+and skipped, so enabling that channel later needs no edit. **A `resolved` goes wherever its `fired`
+went, plus the current route**: the channels are read back from the `fired`'s delivery rows, so a
+rule re-routed mid-alert never leaves a channel with an alert that does not end.
 
 **A delivery row is written before the first attempt.** That is what lets a hub killed mid-retry
 replay the work on the next boot instead of losing it silently. The consequence is accepted and
@@ -481,7 +491,8 @@ database and editable from the interface.
 
 - **No TLS of its own.** A reverse proxy does it better. `SM_SECURE_COOKIES=true` behind it.
 - **No user accounts.** One local admin. Entra ID is deferred.
-- **No per-rule routing.** Every enabled channel receives every transition. Mute a host to silence it.
+- **One channel of each kind.** Routing picks among e-mail, webhook and Teams; there are no two Teams
+  channels or two recipient lists. Mute a host to silence it everywhere.
 - **No clustering.** One hub, one SQLite file, one machine.
 
 ## Testing

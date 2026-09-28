@@ -252,7 +252,7 @@ func TestMessageCarriesTheRuleThreshold(t *testing.T) {
 	}
 	cfg := notify.Config{Public: "https://hub.example"}
 	m := h.message(cfg, store.AlertEvent{RuleID: rule.ID, HostID: host.ID, Metric: "cpu",
-		Kind: "fired", Value: 91, At: time.Now().UTC()}, host)
+		Kind: "fired", Value: 91, At: time.Now().UTC()}, host, h.ruleIndex())
 	if m.Threshold != 77 || m.Duration != 10*time.Minute {
 		t.Fatalf("message lost the rule: %+v", m)
 	}
@@ -261,7 +261,7 @@ func TestMessageCarriesTheRuleThreshold(t *testing.T) {
 	}
 	// The implicit status rule has no row, and must not be looked up.
 	off := h.message(cfg, store.AlertEvent{RuleID: 0, HostID: host.ID, Metric: "status",
-		Kind: "fired", Value: 1, At: time.Now().UTC()}, host)
+		Kind: "fired", Value: 1, At: time.Now().UTC()}, host, h.ruleIndex())
 	if off.Threshold != 0 {
 		t.Fatalf("the status rule has no threshold, got %v", off.Threshold)
 	}

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"sort"
 	"testing"
 	"time"
 )
@@ -159,5 +160,52 @@ func TestDeliveriesReferenceTheirEvent(t *testing.T) {
 	}
 	if len(refs) != 2 || !refs["alert_events"] || !refs["azure_guardrail_events"] {
 		t.Fatalf("deliveries must reference alert_events and azure_guardrail_events, got %v", refs)
+	}
+}
+
+// The channels a resolved owes are those of the last fired before it, for the
+// same rule and host only, whatever state those deliveries ended in.
+func TestFiredChannels(t *testing.T) {
+	s := openTest(t)
+	h, _, _ := s.CreateHost("a", t0)
+	other, _, _ := s.CreateHost("b", t0)
+	old, _ := s.InsertAlertEvent(AlertEvent{RuleID: 1, HostID: h.ID, Metric: "cpu", Kind: "fired", At: t0})
+	s.CreateDelivery(old.ID, "webhook", t0)
+	s.InsertAlertEvent(AlertEvent{RuleID: 1, HostID: h.ID, Metric: "cpu", Kind: "resolved", At: t0})
+	fired, _ := s.InsertAlertEvent(AlertEvent{RuleID: 1, HostID: h.ID, Metric: "cpu", Kind: "fired", At: t0})
+	d, _ := s.CreateDelivery(fired.ID, "smtp", t0)
+	s.MarkDeliveryFailed(d.ID, t0, 4, "refused")
+	s.CreateDelivery(fired.ID, "teams", t0)
+	// Same rule on another host, and another rule on this host: not ours.
+	o, _ := s.InsertAlertEvent(AlertEvent{RuleID: 1, HostID: other.ID, Metric: "cpu", Kind: "fired", At: t0})
+	s.CreateDelivery(o.ID, "webhook", t0)
+	o2, _ := s.InsertAlertEvent(AlertEvent{RuleID: 2, HostID: h.ID, Metric: "cpu", Kind: "fired", At: t0})
+	s.CreateDelivery(o2.ID, "webhook", t0)
+	resolved, _ := s.InsertAlertEvent(AlertEvent{RuleID: 1, HostID: h.ID, Metric: "cpu", Kind: "resolved", At: t0})
+
+	got, err := s.FiredChannels(1, h.ID, resolved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(got)
+	if len(got) != 2 || got[0] != "smtp" || got[1] != "teams" {
+		t.Fatalf("fired channels = %v, want [smtp teams]", got)
+	}
+	if got, _ := s.FiredChannels(3, h.ID, resolved.ID); len(got) != 0 {
+		t.Fatalf("no fired must give no channel, got %v", got)
+	}
+}
+
+func TestGuardrailFiredChannels(t *testing.T) {
+	s := openTest(t)
+	k := GuardrailKey{Subject: "budget", Rule: "budget_threshold", Detail: "80"}
+	fired, _ := s.InsertGuardrailEvent(GuardrailEvent{Subject: k.Subject, Rule: k.Rule, Detail: k.Detail, Kind: "fired", At: t0})
+	s.CreateGuardrailDelivery(fired.ID, "teams", t0)
+	o, _ := s.InsertGuardrailEvent(GuardrailEvent{Subject: k.Subject, Rule: k.Rule, Detail: "100", Kind: "fired", At: t0})
+	s.CreateGuardrailDelivery(o.ID, "smtp", t0)
+	resolved, _ := s.InsertGuardrailEvent(GuardrailEvent{Subject: k.Subject, Rule: k.Rule, Detail: k.Detail, Kind: "resolved", At: t0})
+	got, err := s.GuardrailFiredChannels(k, resolved.ID)
+	if err != nil || len(got) != 1 || got[0] != "teams" {
+		t.Fatalf("guardrail fired channels = %v %v, want [teams]", got, err)
 	}
 }

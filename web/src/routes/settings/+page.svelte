@@ -10,10 +10,11 @@
     type Rule,
     type Settings
   } from '$lib/api';
-  import { healthLabel, parseHeaders, parseRecipients, toPayload } from '$lib/notify';
+  import { enabledChannels, healthLabel, parseHeaders, parseRecipients, routeLabel, toPayload } from '$lib/notify';
   import { parseGroups, toSettingsPayload } from '$lib/azure';
   import { parseThresholds } from '$lib/guardrails';
   import Modal from '$lib/components/Modal.svelte';
+  import ChannelPicker from '$lib/components/ChannelPicker.svelte';
 
   type Tab = 'hosts' | 'alerts' | 'notifications' | 'azure' | 'system';
   let tab = $state<Tab>('hosts');
@@ -29,6 +30,9 @@
   let err = $state('');
 
   let notif = $state<Notifications | null>(null);
+  // What is switched on as saved, not as ticked in an unsaved form: the rules
+  // table says where alerts go now.
+  let savedOn = $state<string[]>([]);
   let smtpPassword = $state<string | null>(null); // null = untouched
   let recipients = $state('');
   let headersText = $state('');
@@ -72,6 +76,7 @@
     rules = a.rules;
     settings = s;
     notif = n;
+    savedOn = enabledChannels(n);
     recipients = n.smtp_to.join('\n');
     headersText = Object.entries(n.webhook_headers)
       .map(([k, v]) => `${k}: ${v}`)
@@ -139,7 +144,8 @@
         host_id: r.host_id,
         metric: r.metric,
         threshold: Number(r.threshold),
-        duration_sec: Number(r.duration_sec)
+        duration_sec: Number(r.duration_sec),
+        channels: r.channels
       };
       if (r.id) await api.put(`/api/v1/alerts/rules/${r.id}`, body);
       else await api.post('/api/v1/alerts/rules', body);
@@ -291,12 +297,13 @@
 {:else if tab === 'alerts'}
   <button
     class="mb-3 rounded bg-zinc-900 px-3 py-1.5 text-sm text-white dark:bg-zinc-100 dark:text-zinc-900"
-    onclick={() => (editing = { id: 0, host_id: null, metric: 'cpu', threshold: 90, duration_sec: 600 })}
+    onclick={() => (editing = { id: 0, host_id: null, metric: 'cpu', threshold: 90, duration_sec: 600, channels: null })}
   >
     Add rule
   </button>
   <p class="mb-3 text-sm text-zinc-500">
-    The offline rule is built in: a host is offline after three missed intervals. Mute a host to silence it entirely.
+    The offline rule is built in: a host is offline after three missed intervals. Its channels are set under
+    Notifications. Mute a host to silence it entirely.
   </p>
   <div class="overflow-x-auto rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
     <table class="w-full text-sm">
@@ -306,6 +313,7 @@
           <th class="px-3 py-2">Metric</th>
           <th class="px-3 py-2">Above</th>
           <th class="px-3 py-2">For</th>
+          <th class="px-3 py-2">Notify</th>
           <th></th>
         </tr>
       </thead>
@@ -316,6 +324,9 @@
             <td class="px-3 py-2">{metrics.find((m) => m[0] === r.metric)?.[1] ?? r.metric}</td>
             <td class="px-3 py-2 tabular-nums">{r.threshold}</td>
             <td class="px-3 py-2 tabular-nums">{Math.round(r.duration_sec / 60)} min</td>
+            <td class="px-3 py-2" class:text-zinc-500={r.channels !== null && r.channels.length === 0}>
+              {routeLabel(r.channels, savedOn)}
+            </td>
             <td class="space-x-3 px-3 py-2 text-right whitespace-nowrap">
               <button class="hover:underline" onclick={() => (editing = { ...r })}>Edit</button>
               <button class="text-red-600 hover:underline" onclick={() => deleteRule(r)}>Delete</button>
@@ -349,6 +360,10 @@
           Duration in seconds
           <input class="mt-1 w-full rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-800" type="number" min="0" bind:value={editing.duration_sec} required />
         </label>
+        <fieldset>
+          <legend class="mb-1">Notify</legend>
+          <ChannelPicker name="rule-route" bind:value={editing.channels} enabled={savedOn} />
+        </fieldset>
         <div class="flex justify-end gap-2">
           <button type="button" class="rounded border border-zinc-300 px-3 py-1.5 dark:border-zinc-700" onclick={() => (editing = null)}>Cancel</button>
           <button class="rounded bg-zinc-900 px-3 py-1.5 text-white dark:bg-zinc-100 dark:text-zinc-900">Save</button>
@@ -453,6 +468,24 @@
         <button type="button" class="{testBtn} mt-3" disabled={!notif.teams_enabled || testing !== ''} onclick={() => testChannel('teams')}>
           {testing === 'teams' ? 'Sending…' : 'Send test'}
         </button>
+      </div>
+
+      <div class={box}>
+        <h3 class="mb-1 font-medium">Routing</h3>
+        <p class="mb-3 text-xs text-zinc-500">
+          Where the transitions without a rule go. Each alert rule has its own, set in Alert rules. A resolved also
+          goes wherever its fired went, so no channel is left with an alert that never ends.
+        </p>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <fieldset>
+            <legend class="mb-1 font-medium">Host offline</legend>
+            <ChannelPicker name="offline-route" bind:value={notif.offline_channels} enabled={savedOn} />
+          </fieldset>
+          <fieldset>
+            <legend class="mb-1 font-medium">Azure guardrails</legend>
+            <ChannelPicker name="guardrail-route" bind:value={notif.guardrail_channels} enabled={savedOn} />
+          </fieldset>
+        </div>
       </div>
 
       <button class="rounded bg-zinc-900 px-3 py-1.5 text-white dark:bg-zinc-100 dark:text-zinc-900">Save notifications</button>

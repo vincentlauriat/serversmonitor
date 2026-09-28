@@ -22,15 +22,16 @@ func (h *Hub) ReloadNotify() {
 	h.channels.Store(&chans)
 }
 
-// notify records one pending delivery per enabled channel, then hands the work
-// to the dispatcher. The row is written first: a crash between here and the
-// send leaves evidence, not silence.
+// notify records one pending delivery per channel the event is routed to,
+// then hands the work to the dispatcher. The row is written first: a crash
+// between here and the send leaves evidence, not silence.
 func (h *Hub) notify(events []store.AlertEvent) {
 	chans := *h.channels.Load()
 	if len(chans) == 0 || len(events) == 0 {
 		return
 	}
 	cfg := *h.ncfg.Load()
+	rules := h.ruleIndex()
 	now := time.Now().UTC()
 	var jobs []notify.Job
 	for _, e := range events {
@@ -39,8 +40,14 @@ func (h *Hub) notify(events []store.AlertEvent) {
 			h.log.Error("notify: host", "err", err, "host_id", e.HostID)
 			continue
 		}
-		m := h.message(cfg, e, host)
-		for _, ch := range chans {
+		var also []string
+		if e.Kind == "resolved" {
+			if also, err = h.st.FiredChannels(e.RuleID, e.HostID, e.ID); err != nil {
+				h.log.Error("notify: channels of the fired", "err", err)
+			}
+		}
+		m := h.message(cfg, e, host, rules)
+		for _, ch := range notify.Route(chans, alertRoute(cfg, e, rules), also) {
 			d, err := h.st.CreateDelivery(e.ID, ch.Name(), now)
 			if err != nil {
 				h.log.Error("notify: create delivery", "err", err)
@@ -52,27 +59,50 @@ func (h *Hub) notify(events []store.AlertEvent) {
 	h.dispatch.Enqueue(jobs...)
 }
 
+// alertRoute is where an alert transition goes: the offline setting for the
+// implicit status rule, the rule's own route otherwise. A rule deleted since
+// the event goes everywhere, the same way its message keeps a zero threshold
+// rather than blocking: over-notifying is the failure a person can see.
+func alertRoute(cfg notify.Config, e store.AlertEvent, rules map[int64]store.Rule) []string {
+	if e.RuleID == alerts.StatusRuleID {
+		return cfg.OfflineRoute
+	}
+	if r, ok := rules[e.RuleID]; ok {
+		return r.Channels
+	}
+	return nil
+}
+
+// ruleIndex reads the rules once for a batch of events. An error leaves it
+// empty, which routes everywhere and messages with a zero threshold.
+func (h *Hub) ruleIndex() map[int64]store.Rule {
+	out := map[int64]store.Rule{}
+	rules, err := h.st.ListRules()
+	if err != nil {
+		h.log.Error("notify: rules", "err", err)
+		return out
+	}
+	for _, r := range rules {
+		out[r.ID] = r
+	}
+	return out
+}
+
 // message turns a stored event into what a channel renders, looking up the
 // threshold of the rule that fired. A rule deleted since keeps a zero
 // threshold rather than blocking the notification.
-func (h *Hub) message(cfg notify.Config, e store.AlertEvent, host store.Host) notify.Message {
+func (h *Hub) message(cfg notify.Config, e store.AlertEvent, host store.Host, rules map[int64]store.Rule) notify.Message {
 	m := notify.Message{HostID: host.ID, HostName: host.Name, Metric: e.Metric,
 		Kind: e.Kind, Value: e.Value, At: e.At, Link: cfg.Link(host.ID)}
-	if e.RuleID != alerts.StatusRuleID {
-		if rules, err := h.st.ListRules(); err == nil {
-			for _, r := range rules {
-				if r.ID == e.RuleID {
-					m.Threshold, m.Duration = r.Threshold, r.Duration
-					break
-				}
-			}
-		}
+	if r, ok := rules[e.RuleID]; ok && e.RuleID != alerts.StatusRuleID {
+		m.Threshold, m.Duration = r.Threshold, r.Duration
 	}
 	return m
 }
 
 // notifyGuardrails is journalGuardrails' delivery half: one delivery row per
-// enabled channel per transition, the same shape the alert path uses.
+// routed channel per transition, the same shape the alert path uses, and the
+// same rule for a resolved: it also goes wherever its fired went.
 func (h *Hub) notifyGuardrails(events []store.GuardrailEvent) {
 	chans := *h.channels.Load()
 	if len(chans) == 0 || len(events) == 0 {
@@ -83,8 +113,16 @@ func (h *Hub) notifyGuardrails(events []store.GuardrailEvent) {
 	names := h.resourceNames()
 	var jobs []notify.Job
 	for _, e := range events {
+		var also []string
+		if e.Kind == "resolved" {
+			var err error
+			k := store.GuardrailKey{Subject: e.Subject, Rule: e.Rule, Detail: e.Detail}
+			if also, err = h.st.GuardrailFiredChannels(k, e.ID); err != nil {
+				h.log.Error("notify: channels of the guardrail fired", "err", err)
+			}
+		}
 		m := guardrailMessage(cfg, e, names[e.Subject])
-		for _, ch := range chans {
+		for _, ch := range notify.Route(chans, cfg.GuardrailRoute, also) {
 			d, err := h.st.CreateGuardrailDelivery(e.ID, ch.Name(), now)
 			if err != nil {
 				h.log.Error("notify: create guardrail delivery", "err", err)
@@ -131,6 +169,7 @@ func (h *Hub) replayPendingDeliveries() {
 	}
 	cfg := *h.ncfg.Load()
 	names := h.resourceNames()
+	rules := h.ruleIndex()
 	var jobs []notify.Job
 	for _, d := range pending {
 		ch, ok := byName[d.Channel]
@@ -144,7 +183,7 @@ func (h *Hub) replayPendingDeliveries() {
 		}
 		e, host, err := h.st.DeliveryEvent(d.ID)
 		if err == nil {
-			jobs = append(jobs, notify.Job{DeliveryID: d.ID, Channel: ch, Message: h.message(cfg, e, host)})
+			jobs = append(jobs, notify.Job{DeliveryID: d.ID, Channel: ch, Message: h.message(cfg, e, host, rules)})
 			continue
 		}
 		if !errors.Is(err, store.ErrNotFound) {
