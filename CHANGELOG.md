@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-28
+
+Lots 7, 8 and 9 are in. No new Azure role is needed; the hub applies database migrations 7 to 9 by
+itself on first start, and every existing rule and schedule behaves as it did: rules and the offline
+and guardrail routes go to every enabled channel, schedules follow the hub-wide time zone.
+
+One API detail to know when scripting: `PUT /api/v1/notifications` without `offline_channels` or
+`guardrail_channels` sets that route back to every channel, since absent means `null`. The page
+always sends both.
+
 ### Added
 - A time zone per stop schedule (lot 9). A schedule can carry its own IANA zone; without one it
   follows the hub-wide zone, read at each tick, which is what every existing schedule keeps doing
@@ -94,5 +104,6 @@ First tagged release. Lots 1 to 5 are in; lot 6 (cost guardrails) is not.
 - `smhub-<os>-<arch>` and `smagent-<os>-<arch>` for linux/amd64, linux/arm64, darwin/amd64,
   darwin/arm64. `install.sh` downloads `smagent-<os>-<arch>` from `releases/latest/download/`.
 
+[0.7.0]: https://github.com/vincentlauriat/serversmonitor/releases/tag/v0.7.0
 [0.6.0]: https://github.com/vincentlauriat/serversmonitor/releases/tag/v0.6.0
 [0.5.0]: https://github.com/vincentlauriat/serversmonitor/releases/tag/v0.5.0
