@@ -1,12 +1,29 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { api, ApiError } from '$lib/api';
+  import { ENTRA_START } from '$lib/users';
 
   let setup = $state(page.url.searchParams.get('setup') === '1');
   let email = $state('');
   let password = $state('');
-  let error = $state('');
+  // A Microsoft sign-in that failed comes back here with its reason. It is
+  // shown as text, never as markup.
+  let error = $state(page.url.searchParams.get('error') ?? '');
   let busy = $state(false);
+  let entra = $state(false);
+
+  onMount(async () => {
+    try {
+      await api.get('/api/v1/me');
+      location.href = '/';
+    } catch (e) {
+      if (e instanceof ApiError) {
+        entra = e.entra;
+        if (e.setupRequired) setup = true;
+      }
+    }
+  });
 
   async function submit(e: Event) {
     e.preventDefault();
@@ -59,4 +76,13 @@
       {setup ? 'Create account' : 'Sign in'}
     </button>
   </form>
+  {#if entra && !setup}
+    <div class="my-4 flex items-center gap-3 text-xs text-zinc-400">
+      <span class="h-px flex-1 bg-zinc-200 dark:bg-zinc-800"></span>or<span class="h-px flex-1 bg-zinc-200 dark:bg-zinc-800"></span>
+    </div>
+    <a
+      class="block w-full rounded border border-zinc-300 py-2 text-center hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+      href={ENTRA_START}>Sign in with Microsoft</a
+    >
+  {/if}
 </div>

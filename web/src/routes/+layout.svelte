@@ -3,11 +3,12 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { api, ApiError } from '$lib/api';
+  import { api, ApiError, type Me } from '$lib/api';
   import { live } from '$lib/live.svelte';
 
   let { children } = $props();
   let email = $state<string | null>(null);
+  let role = $state<Me['role']>('admin');
   let ready = $state(false);
   let firing = $state(0);
 
@@ -22,8 +23,9 @@
 
   onMount(async () => {
     try {
-      const me = await api.get<{ email: string }>('/api/v1/me');
+      const me = await api.get<Me>('/api/v1/me');
       email = me.email;
+      role = me.role;
       live.start();
       live.on('alert', refreshFiring);
       await refreshFiring();
@@ -76,6 +78,13 @@
             title={live.connected ? 'live updates connected' : 'live updates disconnected'}
           ></span>
           <span class="hidden sm:inline">{email}</span>
+          {#if role === 'viewer'}
+            <span
+              class="rounded bg-zinc-100 px-1.5 py-0.5 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+              title="This account can see everything and change nothing. The hub refuses every change it asks for."
+              >read only</span
+            >
+          {/if}
           <button class="hover:underline" onclick={logout}>Log out</button>
         </div>
       </div>
