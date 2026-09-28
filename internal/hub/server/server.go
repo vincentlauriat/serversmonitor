@@ -94,6 +94,7 @@ func New(d Deps) http.Handler {
 	// wildcard would have to match.
 	mux.Handle("POST /api/v1/azure/vms", s.auth(s.handleStartProvision))
 	mux.Handle("GET /api/v1/azure/vms", s.auth(s.handleProvisions))
+	mux.Handle("GET /api/v1/azure/vms/outbound", s.auth(s.handleOutbound))
 	mux.Handle("POST /api/v1/azure/vms/delete", s.auth(s.handleDeleteProvision))
 
 	mux.Handle("GET /api/v1/azure/guardrails", s.auth(s.handleGetGuardrails))

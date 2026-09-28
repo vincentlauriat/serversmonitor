@@ -170,6 +170,60 @@ export interface Provision {
   error: string;
   delete_error: string;
   resources: ProvisionResource[];
+  /** The subnet's outbound access as read before the NIC; '' before lot 8. */
+  outbound: OutboundState | '';
+  outbound_detail: string;
+  /** The status of the host row the VM was made for; '' if that row is gone. */
+  host_status: string;
+}
+
+export type OutboundState = 'nat' | 'default' | 'legacy' | 'route_table' | 'none' | 'unknown';
+
+/** What the hub read about the configured subnet reaching the internet. */
+export interface Outbound {
+  state: OutboundState;
+  detail: string;
+}
+
+/** Known to reach the internet. A route table is not known either way. */
+export function outboundReaches(state: string): boolean {
+  return state === 'nat' || state === 'default' || state === 'legacy';
+}
+
+export function outboundLabel(state: string): string {
+  switch (state) {
+    case 'nat':
+      return 'through a NAT Gateway';
+    case 'default':
+      return 'through defaultOutboundAccess (deprecated)';
+    case 'legacy':
+      return 'implicit, as for any subnet older than 2025-09-30';
+    case 'route_table':
+      return 'through a route table the hub cannot follow';
+    case 'none':
+      return 'none';
+    default:
+      return 'unknown';
+  }
+}
+
+/** How long a created VM gets before its silence is worth a sentence. */
+export const SILENT_AFTER_MIN = 10;
+
+/**
+ * Says that a VM the hub created has not called in, once that is no longer
+ * just a slow boot. Cloud-init installing the agent takes a few minutes; ten
+ * minutes of nothing is a machine that cannot reach GitHub or the hub.
+ */
+export function agentSilence(p: Provision, now: Date): string {
+  if (p.status !== 'succeeded' || p.host_status !== 'never_seen' || !p.finished_at) return '';
+  const min = Math.floor((now.getTime() - new Date(p.finished_at).getTime()) / 60000);
+  if (min < SILENT_AFTER_MIN) return '';
+  const why =
+    p.outbound && !outboundReaches(p.outbound)
+      ? p.outbound_detail
+      : 'Check that the VM can reach GitHub and the hub address in Settings → Azure.';
+  return `Created ${min} min ago and its agent has not called in. ${why}`;
 }
 
 /**

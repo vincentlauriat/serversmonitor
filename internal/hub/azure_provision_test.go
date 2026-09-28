@@ -33,6 +33,7 @@ type provisionFake struct {
 	blockVM  chan struct{}
 	bodies   []string
 	vnetFail int
+	vnetBody string // what the VNet read answers; a location alone when empty
 }
 
 func newProvisionFake(t *testing.T) *provisionFake {
@@ -44,7 +45,7 @@ func newProvisionFake(t *testing.T) *provisionFake {
 			f.reqs = append(f.reqs, r.Method+" "+r.URL.Path)
 			f.bodies = append(f.bodies, string(raw))
 		}
-		failVM, block, vnetFail := f.failVM, f.blockVM, f.vnetFail
+		failVM, block, vnetFail, vnetBody := f.failVM, f.blockVM, f.vnetFail, f.vnetBody
 		f.mu.Unlock()
 
 		switch {
@@ -53,6 +54,10 @@ func newProvisionFake(t *testing.T) *provisionFake {
 		case strings.HasSuffix(r.URL.Path, "/virtualNetworks/vnet-sandbox"):
 			if vnetFail != 0 {
 				w.WriteHeader(vnetFail)
+				return
+			}
+			if vnetBody != "" {
+				io.WriteString(w, vnetBody)
 				return
 			}
 			io.WriteString(w, `{"location":"westeurope"}`)
@@ -556,5 +561,48 @@ func TestDeletingAnUnknownProvisionIsRefused(t *testing.T) {
 	defer cancel()
 	if err := h.DeleteProvision(9999, "vm-test"); !errors.Is(err, store.ErrNoSuchProvision) {
 		t.Fatalf("err = %v, want ErrNoSuchProvision", err)
+	}
+}
+
+// noOutboundVNet is the sandbox subnet as Azure created it on 2026-09-21:
+// defaultOutboundAccess false, no NAT Gateway, no route table.
+const noOutboundVNet = `{"location":"westeurope","properties":{"subnets":[{"id":"` + provisionSubnet +
+	`","properties":{"defaultOutboundAccess":false}}]}}`
+
+// A subnet with no way out is recorded against the run, and the VM is still
+// created: the lot 8 choice is a warning, not a refusal.
+func TestAProvisionRecordsItsSubnetsOutboundAndCarriesOn(t *testing.T) {
+	f := newProvisionFake(t)
+	f.vnetBody = noOutboundVNet
+	h, cancel := provisionHub(t, f, t.TempDir(), true)
+	defer cancel()
+
+	id, err := h.StartProvision("vm-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := waitProvision(t, h, id)
+	if p.Status != "succeeded" || len(p.Resources) != 2 {
+		t.Fatalf("the VM must still be created: status %s, %d resources", p.Status, len(p.Resources))
+	}
+	if p.Outbound != azure.OutboundNone || p.OutboundDetail == "" {
+		t.Fatalf("outbound = %q %q", p.Outbound, p.OutboundDetail)
+	}
+}
+
+func TestCheckOutboundReadsTheConfiguredSubnet(t *testing.T) {
+	f := newProvisionFake(t)
+	f.vnetBody = noOutboundVNet
+	h, cancel := provisionHub(t, f, t.TempDir(), true)
+	defer cancel()
+
+	out, err := h.CheckOutbound(context.Background())
+	if err != nil || out.State != azure.OutboundNone {
+		t.Fatalf("outbound = %+v %v", out, err)
+	}
+	for _, r := range f.requests() {
+		if !strings.HasPrefix(r, "GET ") {
+			t.Fatalf("a check must only read, it sent %s", r)
+		}
 	}
 }

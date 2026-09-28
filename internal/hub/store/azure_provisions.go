@@ -22,7 +22,12 @@ type AzureProvision struct {
 	// DeleteError is why the last deletion attempt stopped, if one did. It is
 	// separate from Error: a provision that succeeded still succeeded.
 	DeleteError string
-	Resources   []AzureProvisionResource
+	// Outbound is the subnet's outbound access as read before the NIC was
+	// created (azure.Outbound's state), and OutboundDetail its sentence.
+	// Empty for a run from before lot 8.
+	Outbound       string
+	OutboundDetail string
+	Resources      []AzureProvisionResource
 }
 
 // AzureProvisionResource is one resource that exists in Azure because of a
@@ -69,6 +74,14 @@ func (s *Store) MarkAzureProvisionRunning(id int64) error {
 func (s *Store) RecordAzureProvisionResource(provisionID int64, armID, kind string, now time.Time) error {
 	_, err := s.db.Exec(`INSERT INTO azure_provision_resources (provision_id, arm_id, kind, created_at)
 		VALUES (?,?,?,?)`, provisionID, armID, kind, fmtTime(now))
+	return err
+}
+
+// SetAzureProvisionOutbound records what the subnet looked like, as soon as
+// it is read: a run that dies at the NIC still says why a VM would not have
+// called in.
+func (s *Store) SetAzureProvisionOutbound(id int64, state, detail string) error {
+	_, err := s.db.Exec(`UPDATE azure_provisions SET outbound = ?, outbound_detail = ? WHERE id = ?`, state, detail, id)
 	return err
 }
 
@@ -135,7 +148,7 @@ func (s *Store) ListAzureProvisions(limit int) ([]AzureProvision, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := s.db.Query(`SELECT id, name, host_id, status, requested_at, finished_at, error, delete_error
+	rows, err := s.db.Query(`SELECT id, name, host_id, status, requested_at, finished_at, error, delete_error, outbound, outbound_detail
 		FROM azure_provisions ORDER BY requested_at DESC, id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -148,7 +161,7 @@ func (s *Store) ListAzureProvisions(limit int) ([]AzureProvision, error) {
 		var hostID sql.NullInt64
 		var requested string
 		var finished sql.NullString
-		if err := rows.Scan(&p.ID, &p.Name, &hostID, &p.Status, &requested, &finished, &p.Error, &p.DeleteError); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &hostID, &p.Status, &requested, &finished, &p.Error, &p.DeleteError, &p.Outbound, &p.OutboundDetail); err != nil {
 			return nil, err
 		}
 		if hostID.Valid {

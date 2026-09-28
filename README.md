@@ -186,10 +186,11 @@ delete anything without a person doing it on purpose.
 
 ## What this does not do yet
 
-- **The hub does not check the subnet can reach the internet.** It cannot: reading it is one
-  permission and fixing it is another, and both are outside the role it is given. If
-  `defaultOutboundAccess` is false and there is no NAT Gateway, the VM boots and the agent never
-  connects, with nothing on the hub's side to say why.
+- **The hub warns about a subnet with no way out, it does not fix it.** It reads the subnet's
+  outbound access (NAT Gateway, `defaultOutboundAccess`, route table) with the role it already has
+  and says it next to Create VM, on the run, and again when a created VM has not called in after ten
+  minutes. It still creates the VM: a route table may lead to a firewall the hub cannot read.
+  Changing the subnet is a `Microsoft.Network` write outside its role.
 - **Three channels, one of each.** A rule can go to e-mail, the webhook, Teams, or any mix, but not
   to two different Teams channels or two recipient lists.
 - **One user.** A single local admin account; Entra ID is deferred.
@@ -210,6 +211,7 @@ delete anything without a person doing it on purpose.
 | 5 | VM provisioning with the agent pre-installed | **done** |
 | 6 | Cost guardrails: schedules, orphans, budget alerts | **done** |
 | 7 | Alert routing per rule | **done** |
+| 8 | Warn when a new VM's subnet cannot reach the internet | **done** |
 
 ## Design notes
 
