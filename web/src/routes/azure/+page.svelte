@@ -4,16 +4,20 @@
   import {
     actionOutcome,
     actionsFor,
+    agentSilence,
     isInFlight,
     money,
     deleteConfirmed,
     leftovers,
     needsConfirmation,
+    outboundLabel,
+    outboundReaches,
     provisionBlockedReason,
     provisionOutcome,
     shortType,
     sortRows,
     type AzureAction,
+    type Outbound,
     type Provision
   } from '$lib/azure';
   import {
@@ -149,6 +153,24 @@
     }
   }
 
+  // The configured subnet's outbound access, read live so it is said before
+  // anyone presses Create VM. An error is shown as such, never as "none".
+  let outbound = $state<Outbound | null>(null);
+  let outboundErr = $state('');
+  async function loadOutbound() {
+    try {
+      outbound = await api.get<Outbound>('/api/v1/azure/vms/outbound');
+      outboundErr = '';
+    } catch (e) {
+      outbound = null;
+      outboundErr = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  // Ticks so a created VM's silence is said without waiting for an event:
+  // silence is exactly the case where no event comes.
+  let now = $state(new Date());
+
   async function loadGuardrails() {
     try {
       guardrails = await api.get<GuardrailsView>('/api/v1/azure/guardrails');
@@ -218,6 +240,8 @@
     loadProvisions();
     loadGuardrails();
     loadSchedules();
+    loadOutbound();
+    const tick = setInterval(() => (now = new Date()), 60_000);
     // A sync can take minutes when the credential endpoint is unreachable, and
     // it reports every outcome, not only the good ones. Without this the page
     // sits on "no inventory has run yet" for the whole of a failure.
@@ -235,6 +259,7 @@
       load(); // a created or deleted VM changed what the inventory holds
     });
     return () => {
+      clearInterval(tick);
       offSync();
       offAction();
       offProvision();
@@ -688,6 +713,16 @@
           internet. The size, image, subnet, SSH key and the address the agent dials come from
           <a class="underline" href="/settings#azure">Settings → Azure</a>.
         </p>
+        <!-- It does need to reach out: cloud-init fetches the agent from GitHub,
+             then the agent dials the hub. Said here, before the button is used. -->
+        {#if outbound}
+          <p class="mt-2 text-xs" class:text-zinc-500={outboundReaches(outbound.state)} class:text-amber-600={!outboundReaches(outbound.state)}>
+            Outbound access of the subnet: {outboundLabel(outbound.state)}.
+            {#if !outboundReaches(outbound.state) || outbound.state === 'default'}{outbound.detail}{/if}
+          </p>
+        {:else if outboundErr}
+          <p class="mt-2 text-xs text-zinc-500">The subnet's outbound access could not be read: {outboundErr}</p>
+        {/if}
       {/if}
       {#if provisionErr}
         <p class="mt-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
@@ -700,12 +735,22 @@
       <div class="mt-3 space-y-3">
         {#each provisions as p (p.id)}
           {@const left = leftovers(p)}
+          {@const silence = agentSilence(p, now)}
           <div class={box}>
             <div class="flex flex-wrap items-baseline justify-between gap-2">
               <span class="font-medium">{p.name}</span>
               <span class="text-xs text-zinc-500">{fmtAgo(p.requested_at)}</span>
             </div>
             <p class="mt-1 text-sm" class:text-red-600={p.status === 'failed'}>{provisionOutcome(p)}</p>
+            {#if silence}
+              <p class="mt-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+                {silence}
+              </p>
+            {:else if p.outbound && !outboundReaches(p.outbound) && p.status !== 'failed'}
+              <p class="mt-2 text-xs text-amber-600">
+                Created in a subnet whose outbound access is {outboundLabel(p.outbound)}. {p.outbound_detail}
+              </p>
+            {/if}
 
             {#if left.length > 0}
               <!-- Named, one by one. A failed run the page cannot name is a

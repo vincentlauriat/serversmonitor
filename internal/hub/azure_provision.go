@@ -111,6 +111,18 @@ func (h *Hub) runProvision(provisionID int64, p azure.ProvisionConfig, req azure
 		return h.st.RecordAzureProvisionResource(provisionID, c.ARMID, c.Kind, time.Now().UTC())
 	}
 
+	// The subnet's outbound access is written down as soon as it is read, and
+	// never stops the run: Vincent chose a warning over a refusal, since a
+	// route the hub cannot see may still lead out (lot 8).
+	req.Outbound = func(o azure.Outbound) {
+		if err := h.st.SetAzureProvisionOutbound(provisionID, o.State, o.Detail); err != nil {
+			h.log.Error("azure provision: record outbound", "err", err)
+		}
+		if !o.Reaches() {
+			h.log.Warn("azure provision: the subnet may not reach the internet", "name", req.Name, "outbound", o.State)
+		}
+	}
+
 	if err := azure.CreateVM(ctx, client, p, req, onCreated); err != nil {
 		// Nothing is deleted here. What was created is in the record, and the
 		// page shows it with a Delete button beside each leftover — see §4 of
@@ -214,4 +226,18 @@ func (h *Hub) runDeleteProvision(provisionID int64, rs []azure.Deletable, client
 	// defect lot 3 shipped and lot 4 fixed.
 	h.bus.Publish("azure_provision", map[string]any{"id": provisionID, "deleted": true})
 	h.kickAzure()
+}
+
+// CheckOutbound reads the configured subnet's outbound access now, for the
+// page to show next to Create VM. It creates nothing and records nothing.
+func (h *Hub) CheckOutbound(ctx context.Context) (azure.Outbound, error) {
+	_, client, ok := h.azureReady()
+	if !ok {
+		return azure.Outbound{}, ErrAzureOff
+	}
+	p := azure.LoadProvisionConfig(h.st)
+	if strings.TrimSpace(p.SubnetID) == "" {
+		return azure.Outbound{}, azure.Refuse("no subnet is configured for new VMs")
+	}
+	return azure.CheckOutbound(ctx, client, p.SubnetID)
 }

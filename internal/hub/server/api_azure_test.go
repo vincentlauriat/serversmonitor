@@ -37,6 +37,14 @@ type fakeAzurer struct {
 	orphanDeleteID   string
 	orphanDeleteName string
 	orphanDeleteErr  error
+
+	// Lot 8.
+	outbound    azure.Outbound
+	outboundErr error
+}
+
+func (f *fakeAzurer) CheckOutbound(context.Context) (azure.Outbound, error) {
+	return f.outbound, f.outboundErr
 }
 
 // GuardrailSettings returns DefaultSettings() unless a test has overridden

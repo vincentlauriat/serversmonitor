@@ -415,7 +415,18 @@ désormais le subnet de la sandbox. C'est un mécanisme déprécié en sursis ; 
 une NAT Gateway sur le subnet, à environ 32 €/mois plus le trafic — de l'argent réel dans une
 sandbox dont le sujet est le coût. Le hub ne peut créer ni l'une ni l'autre : ce sont des écritures
 `Microsoft.Network` hors de `Virtual Machine Contributor`. C'est une propriété du réseau que
-désigne le réglage, et le hub ne la vérifie pas plus qu'il ne peut la corriger.
+désigne le réglage, et le hub ne peut pas la corriger.
+
+**Il peut la lire en revanche, et depuis le lot 8 il le fait.** `virtualNetworks/read` fait partie
+du rôle, et la lecture d'un VNet contient ses subnets — le même `GET` qui trouve la région. Le
+verdict, dans l'ordre : une NAT Gateway sort ; une table de routage ne peut pas être suivie (un
+`0.0.0.0/0` vers un pare-feu l'emporte sur tout, et le pare-feu est hors d'atteinte) ;
+`defaultOutboundAccess` absent est un subnet antérieur au changement, qui garde l'accès implicite ;
+`true` sort, déprécié ; `false` sans rien d'autre ne sort pas. **Il avertit, il ne refuse pas** —
+choix de Vincent, car une route que le hub ne voit pas peut quand même sortir. La page lit le subnet
+configuré en direct à côté de Create VM, chaque run enregistre ce qu'il a lu
+(`azure_provisions.outbound`), et une VM créée depuis plus de dix minutes dont l'hôte est encore
+`never_seen` reçoit une phrase qui désigne le subnet comme cause probable.
 
 Créer, c'est deux `PUT` — la NIC, puis la VM — précédés d'un `GET` sur le VNet du subnet, car un
 subnet n'a pas de localisation propre et choisir une région par défaut créerait la NIC là où le

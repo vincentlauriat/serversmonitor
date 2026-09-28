@@ -393,7 +393,17 @@ subnet now carries. It is a deprecated mechanism on borrowed time; the durable a
 Gateway on the subnet, which costs about €32 a month plus traffic — real money in a sandbox whose
 subject is cost. The hub cannot create either: both are `Microsoft.Network` writes outside
 `Virtual Machine Contributor`. This is a property of the network the subnet setting points at, and
-the hub neither checks it nor can fix it.
+the hub cannot fix it.
+
+**It can read it, though, and since lot 8 it does.** `virtualNetworks/read` is in the role, and a
+VNet read carries its subnets inline — the same `GET` that finds the region. The verdict, in order:
+a NAT Gateway reaches out; a route table cannot be followed (a `0.0.0.0/0` to a firewall overrides
+everything else, and the firewall is out of reach); `defaultOutboundAccess` absent is a subnet older
+than the change and keeps implicit access; `true` reaches out, deprecated; `false` with neither is
+no way out. **It warns, it does not refuse** — Vincent's choice, because a route the hub cannot see
+may still lead out. The page reads the configured subnet live next to Create VM, each run records
+what it read (`azure_provisions.outbound`), and a VM created more than ten minutes ago whose host
+is still `never_seen` gets a sentence naming the subnet as the likely cause.
 
 Creating is two `PUT`s — the NIC, then the VM — preceded by one `GET` on the subnet's VNet, because a
 subnet has no location of its own and defaulting a region would create the NIC where the subnet is

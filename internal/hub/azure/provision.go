@@ -2,8 +2,6 @@ package azure
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -27,6 +25,10 @@ type CreateRequest struct {
 	Name   string
 	HostID int64
 	Token  string
+	// Outbound, when set, is told what the subnet's outbound access looks
+	// like, before anything is created. It never stops the run: a subnet
+	// with no outbound access is warned about, not refused (lot 8).
+	Outbound func(Outbound)
 }
 
 // Created is one resource that now exists in Azure.
@@ -74,10 +76,14 @@ func CreateVM(ctx context.Context, c *Client, p ProvisionConfig, req CreateReque
 	// A subnet has no location of its own; its VNet does. Reading it is one
 	// call, and the alternative — defaulting a region — creates the NIC
 	// somewhere the subnet is not, which fails at the VM PUT and leaves a
-	// leftover produced by a guess.
-	location, err := vnetLocation(ctx, c, parts.VNetID)
+	// leftover produced by a guess. The same read says whether the subnet
+	// reaches the internet, which the agent needs to ever call in.
+	location, outbound, err := readVNet(ctx, c, parts, p.SubnetID)
 	if err != nil {
 		return err
+	}
+	if req.Outbound != nil {
+		req.Outbound(outbound)
 	}
 
 	tags := map[string]string{CreatedByTag: CreatedByValue}
@@ -158,24 +164,6 @@ func put(ctx context.Context, c *Client, armID, apiVersion string, body any) err
 		return err
 	}
 	return Await(ctx, c, resp)
-}
-
-func vnetLocation(ctx context.Context, c *Client, vnetID string) (string, error) {
-	body, err := c.Get(ctx, vnetID, url.Values{"api-version": {networkAPIVersion}})
-	if err != nil {
-		return "", fmt.Errorf("azure: cannot read the subnet's virtual network, so the region "+
-			"a VM would go in is unknown: %w", err)
-	}
-	var v struct {
-		Location string `json:"location"`
-	}
-	if err := json.Unmarshal(body, &v); err != nil {
-		return "", fmt.Errorf("azure: the virtual network read is not an object: %w", err)
-	}
-	if v.Location == "" {
-		return "", fmt.Errorf("azure: %s came back without a location", vnetID)
-	}
-	return v.Location, nil
 }
 
 // parseImage splits publisher:offer:sku:version, which is how the Azure CLI

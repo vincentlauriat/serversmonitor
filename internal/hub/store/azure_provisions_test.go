@@ -143,3 +143,22 @@ func TestNoProvisionsIsAnEmptyListNotNil(t *testing.T) {
 		t.Fatal("want an empty slice, got nil — it renders as null over JSON")
 	}
 }
+
+func TestAProvisionRemembersItsSubnetsOutbound(t *testing.T) {
+	s := openTest(t)
+	id, err := s.StartAzureProvision("vm-a", nil, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps, _ := s.ListAzureProvisions(10)
+	if len(ps) != 1 || ps[0].Outbound != "" {
+		t.Fatalf("a run not yet read has no outbound: %+v", ps)
+	}
+	if err := s.SetAzureProvisionOutbound(id, "none", "no way out"); err != nil {
+		t.Fatal(err)
+	}
+	ps, _ = s.ListAzureProvisions(10)
+	if ps[0].Outbound != "none" || ps[0].OutboundDetail != "no way out" {
+		t.Fatalf("outbound lost: %+v", ps[0])
+	}
+}

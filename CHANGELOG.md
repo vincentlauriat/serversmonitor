@@ -7,6 +7,12 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Outbound access check for new VMs (lot 8). The hub reads the configured subnet's outbound access
+  from the VNet read it already makes (NAT Gateway, `defaultOutboundAccess`, route table), with no
+  new role. It is shown next to Create VM, recorded on each run (migration 8), and a VM whose agent
+  has not called in ten minutes after creation says so, naming the subnet when it had no way out.
+  It warns and never refuses. `GET /api/v1/azure/vms/outbound`; provisions gain `outbound`,
+  `outbound_detail` and `host_status`.
 - Alert routing per rule (lot 7). Each rule picks the channels it notifies: every enabled channel
   (the default, and what every existing rule keeps doing after migration 7), some of them, or none,
   in which case the alert still fires and shows but tells nobody. The offline rule and the Azure

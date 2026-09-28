@@ -33,6 +33,9 @@ type Azurer interface {
 	// DeleteOrphan is lot 5's delete-by-name generalised to an ARM id and
 	// type. The second and last destructive call the hub makes.
 	DeleteOrphan(resourceID, confirmName string) error
+	// CheckOutbound reads whether the configured subnet reaches the
+	// internet, so the page can say it before a VM is created (lot 8).
+	CheckOutbound(ctx context.Context) (azure.Outbound, error)
 }
 
 type azureRow struct {
@@ -459,6 +462,13 @@ type provisionView struct {
 	Error       string                  `json:"error"`
 	DeleteError string                  `json:"delete_error"`
 	Resources   []provisionResourceView `json:"resources"`
+	// Outbound is the subnet's outbound access as read before the NIC was
+	// created, "" for a run from before lot 8.
+	Outbound       string `json:"outbound"`
+	OutboundDetail string `json:"outbound_detail"`
+	// HostStatus is the status of the host row the VM was created for, so the
+	// page can say that an agent never called in. "" when the row is gone.
+	HostStatus string `json:"host_status"`
 }
 
 // handleStartProvision answers as soon as the row exists. Creating a VM is
@@ -501,7 +511,13 @@ func (s *server) handleProvisions(w http.ResponseWriter, r *http.Request, _ stor
 	for _, p := range ps {
 		v := provisionView{ID: p.ID, Name: p.Name, HostID: p.HostID, Status: p.Status,
 			RequestedAt: p.RequestedAt.Format(time.RFC3339), Error: p.Error,
-			DeleteError: p.DeleteError, Resources: make([]provisionResourceView, 0, len(p.Resources))}
+			DeleteError: p.DeleteError, Resources: make([]provisionResourceView, 0, len(p.Resources)),
+			Outbound: p.Outbound, OutboundDetail: p.OutboundDetail}
+		if p.HostID != nil {
+			if h, err := s.Store.Host(*p.HostID); err == nil {
+				v.HostStatus = h.Status
+			}
+		}
 		if p.FinishedAt != nil {
 			f := p.FinishedAt.Format(time.RFC3339)
 			v.FinishedAt = &f
@@ -518,6 +534,24 @@ func (s *server) handleProvisions(w http.ResponseWriter, r *http.Request, _ stor
 		out = append(out, v)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"provisions": out})
+}
+
+// handleOutbound reads the configured subnet live. A read Azure refuses is
+// a 502 with Azure's words: the page shows it where the verdict would be.
+func (s *server) handleOutbound(w http.ResponseWriter, r *http.Request, _ store.User) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	out, err := s.Azure.CheckOutbound(ctx)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, out)
+	case errors.Is(err, azure.ErrNotConfigured):
+		writeErr(w, http.StatusBadRequest, "Azure is not configured")
+	case azure.IsRefusal(err):
+		writeErr(w, http.StatusBadRequest, err.Error())
+	default:
+		writeErr(w, http.StatusBadGateway, err.Error())
+	}
 }
 
 func (s *server) handleDeleteProvision(w http.ResponseWriter, r *http.Request, _ store.User) {

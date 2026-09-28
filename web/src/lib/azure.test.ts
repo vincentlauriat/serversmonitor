@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   actionOutcome,
   actionsFor,
+  agentSilence,
+  outboundLabel,
+  outboundReaches,
   budgetShare,
   deleteConfirmed,
   isInFlight,
@@ -206,7 +209,34 @@ describe('provisioning', () => {
     error: '',
     delete_error: '',
     resources: [res()],
+    outbound: '',
+    outbound_detail: '',
+    host_status: 'online',
     ...o
+  });
+
+  it('counts only a known way out as reaching the internet', () => {
+    expect(['nat', 'default', 'legacy'].every(outboundReaches)).toBe(true);
+    expect(['route_table', 'none', 'unknown', ''].some(outboundReaches)).toBe(false);
+    expect(outboundLabel('none')).toBe('none');
+    expect(outboundLabel('route_table')).toMatch(/route table/);
+  });
+
+  it('says a created VM is silent only after ten quiet minutes', () => {
+    const quiet = prov({ host_status: 'never_seen', finished_at: '2026-09-21T10:03:00Z' });
+    expect(agentSilence(quiet, new Date('2026-09-21T10:12:00Z'))).toBe('');
+    expect(agentSilence(quiet, new Date('2026-09-21T10:15:00Z'))).toMatch(/12 min ago .* not called in/);
+    // Once the agent has called in, or when the run did not create the VM,
+    // there is nothing to say.
+    expect(agentSilence(prov({ host_status: 'online' }), new Date('2026-09-22T00:00:00Z'))).toBe('');
+    expect(agentSilence(prov({ status: 'failed', host_status: 'never_seen' }), new Date('2026-09-22T00:00:00Z'))).toBe('');
+  });
+
+  it('names the subnet as the likely cause when it had no way out', () => {
+    const p = prov({ host_status: 'never_seen', outbound: 'none', outbound_detail: 'Set defaultOutboundAccess to true.' });
+    expect(agentSilence(p, new Date('2026-09-21T11:00:00Z'))).toMatch(/defaultOutboundAccess/);
+    const ok = prov({ host_status: 'never_seen', outbound: 'nat', outbound_detail: 'A NAT Gateway.' });
+    expect(agentSilence(ok, new Date('2026-09-21T11:00:00Z'))).toMatch(/reach GitHub and the hub/);
   });
 
   it('says plainly that an interrupted run was never resumed', () => {
