@@ -28,7 +28,7 @@ router or a VM without a public address be watched without opening a single port
 |---|---|
 | Machine | CPU, memory and swap, disks per mount point, disk I/O, network, load, temperatures, uptime |
 | Docker | Every container: state, CPU, memory, network — read-only, through the socket |
-| Alerts | CPU, memory, disk, load, temperature, bandwidth, plus a built-in offline rule |
+| Alerts | CPU, memory, disk, load, temperature, bandwidth, plus a built-in offline rule, each routed to the channels you pick |
 | Cost guardrails | Budget thresholds and an end-of-month projection, orphaned Azure resources, stop schedules for App Services and VMs |
 
 ## The rule that makes it trustworthy
@@ -190,7 +190,8 @@ delete anything without a person doing it on purpose.
   permission and fixing it is another, and both are outside the role it is given. If
   `defaultOutboundAccess` is false and there is no NAT Gateway, the VM boots and the agent never
   connects, with nothing on the hub's side to say why.
-- **No per-rule routing.** Every enabled channel receives every transition. Mute a host to silence it.
+- **Three channels, one of each.** A rule can go to e-mail, the webhook, Teams, or any mix, but not
+  to two different Teams channels or two recipient lists.
 - **One user.** A single local admin account; Entra ID is deferred.
 - **No TLS of its own.** Put a reverse proxy in front for anything but localhost.
 - **No automatic deletion.** Every guardrail only ever alerts or, for an orphan, deletes what a
@@ -208,6 +209,7 @@ delete anything without a person doing it on purpose.
 | 4 | Azure actions: start, stop, restart | **done** |
 | 5 | VM provisioning with the agent pre-installed | **done** |
 | 6 | Cost guardrails: schedules, orphans, budget alerts | **done** |
+| 7 | Alert routing per rule | **done** |
 
 ## Design notes
 

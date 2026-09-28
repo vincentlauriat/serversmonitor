@@ -72,6 +72,8 @@ export interface Rule {
   metric: string;
   threshold: number;
   duration_sec: number;
+  /** null: every enabled channel. []: none, the alert only shows here. */
+  channels: string[] | null;
 }
 export interface AlertEvent {
   id: number;
@@ -141,6 +143,9 @@ export interface Notifications {
   webhook_headers: Record<string, string>;
   teams_enabled: boolean;
   teams_url: string;
+  /** Routes of the offline rule and the Azure guardrails, same shape as Rule.channels. */
+  offline_channels: string[] | null;
+  guardrail_channels: string[] | null;
   health: Record<string, NotifyHealth>;
 }
 export interface Delivery {

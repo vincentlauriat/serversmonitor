@@ -127,7 +127,7 @@ stockés en chaînes RFC 3339 UTC, donc l'ordre lexical est l'ordre chronologiqu
 | `samples` | Les échantillons bruts. |
 | `samples_10m`, `samples_1h`, `samples_1d` | Les moyennes agrégées. |
 | `containers`, `container_samples` | Les conteneurs Docker et leurs séries. |
-| `alert_rules` | Métrique, seuil, durée, hôte optionnel. |
+| `alert_rules` | Métrique, seuil, durée, hôte optionnel, canaux (`NULL` = tous). |
 | `alert_events` | Journal en ajout seul des transitions `fired` et `resolved`, pour un hôte. |
 | `azure_guardrail_events` | La même forme en ajout seul qu'`alert_events`, pour un sujet qui n'est pas un hôte : `budget`, ou l'id ARM en minuscules d'une ressource. |
 | `deliveries` | Une ligne par (événement, canal) : `pending`, `sent` ou `failed`. Pointe vers exactement l'un des deux, `alert_events` ou `azure_guardrail_events` — un `CHECK` garantit que ce n'est jamais les deux ni jamais aucun. |
@@ -181,8 +181,18 @@ d'écrire un `resolved` de synthèse. Le journal reste honnête.
 
 ## Notifications
 
-`notify` rend un `Message` une fois et le confie à chaque `Channel` activé, une interface à une seule
-méthode.
+`notify` rend un `Message` une fois et le confie à chaque `Channel` activé vers lequel l'événement
+est routé, une interface à une seule méthode.
+
+**Routage.** Chaque règle nomme les canaux qu'elle notifie (`alert_rules.channels`) : `NULL` veut
+dire tous les canaux activés, ce que fait toujours chaque règle créée avant le lot 7 ; une chaîne
+vide veut dire aucun canal, l'alerte se déclenche et s'affiche sans prévenir personne ; sinon une
+liste séparée par des virgules. La règle offline et les garde fous n'ont pas de ligne, leurs routes
+sont donc deux réglages, `notify_route_offline` et `notify_route_guardrails`, avec `*` pour tous les
+canaux. Une route qui nomme un canal éteint le garde et le saute : rallumer ce canal plus tard ne
+demande aucune modification. **Un `resolved` part là où est parti son `fired`, plus la route
+actuelle** : les canaux sont relus sur les lignes de livraison du `fired`, donc une règle reroutée
+pendant une alerte ne laisse jamais un canal avec une alerte qui ne finit pas.
 
 **La ligne de livraison est écrite avant la première tentative.** C'est ce qui permet à un hub tué en
 plein retry de rejouer le travail au démarrage suivant au lieu de le perdre en silence. La
@@ -511,8 +521,8 @@ est dans la base et éditable depuis l'interface.
 
 - **Pas de TLS propre.** Un reverse proxy le fait mieux. `SM_SECURE_COOKIES=true` derrière lui.
 - **Pas de comptes utilisateurs.** Un seul administrateur local. Entra ID est repoussé.
-- **Pas de routage par règle.** Chaque canal activé reçoit chaque transition. Mettre un hôte en
-  sourdine pour le faire taire.
+- **Un seul canal de chaque type.** Le routage choisit parmi e-mail, webhook et Teams ; pas deux
+  canaux Teams ni deux listes de destinataires. Mettre un hôte en sourdine le fait taire partout.
 - **Pas de cluster.** Un hub, un fichier SQLite, une machine.
 
 ## Tests

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -41,6 +42,53 @@ type Config struct {
 	SMTP    SMTPConfig
 	Webhook WebhookConfig
 	Teams   TeamsConfig
+	// The routes of the transitions that have no rule row: a host going
+	// offline, and the Azure guardrails. nil is every enabled channel, empty is
+	// none, the same convention as a rule's Channels.
+	OfflineRoute   []string
+	GuardrailRoute []string
+}
+
+// ChannelNames is every channel the hub knows, in the order it builds them.
+var ChannelNames = []string{"smtp", "webhook", "teams"}
+
+// NormalizeRoute checks a route and puts it in channel order without
+// duplicates, so one route reads the same in the store, the API and the page.
+// nil stays nil: "every channel" is not the list of today's channels, it also
+// covers one enabled tomorrow.
+func NormalizeRoute(names []string) ([]string, error) {
+	if names == nil {
+		return nil, nil
+	}
+	want := map[string]bool{}
+	for _, n := range names {
+		if !slices.Contains(ChannelNames, n) {
+			return nil, fmt.Errorf("unknown channel %q, must be smtp, webhook or teams", n)
+		}
+		want[n] = true
+	}
+	out := []string{}
+	for _, n := range ChannelNames {
+		if want[n] {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
+// Route keeps the enabled channels a transition is owed: those its route
+// names (all of them when the route is nil), plus those named in also. A
+// resolved passes the channels its fired went to as also, so a channel that
+// heard an alert start hears it end even after the rule was re-routed. A name
+// that is not enabled is skipped: nothing can deliver through it.
+func Route(chans []Channel, route, also []string) []Channel {
+	var out []Channel
+	for _, ch := range chans {
+		if route == nil || slices.Contains(route, ch.Name()) || slices.Contains(also, ch.Name()) {
+			out = append(out, ch)
+		}
+	}
+	return out
 }
 
 // Link builds the host page URL, or "" when no public URL is configured:
@@ -92,6 +140,12 @@ func (c Config) Validate() error {
 	}
 	if err := requireURL("webhook", c.Webhook.Enabled, c.Webhook.URL, false); err != nil {
 		return err
+	}
+	if _, err := NormalizeRoute(c.OfflineRoute); err != nil {
+		return fmt.Errorf("offline routing: %w", err)
+	}
+	if _, err := NormalizeRoute(c.GuardrailRoute); err != nil {
+		return fmt.Errorf("guardrail routing: %w", err)
 	}
 	return requireURL("teams", c.Teams.Enabled, c.Teams.URL, true)
 }

@@ -39,6 +39,11 @@ type notifyView struct {
 	TeamsEnabled bool   `json:"teams_enabled"`
 	TeamsURL     string `json:"teams_url"`
 
+	// Routes of the transitions with no rule row: null is every enabled
+	// channel, [] is none, the same shape as a rule's channels.
+	OfflineChannels   []string `json:"offline_channels"`
+	GuardrailChannels []string `json:"guardrail_channels"`
+
 	Health map[string]healthView `json:"health"`
 }
 
@@ -69,6 +74,9 @@ type notifyInput struct {
 
 	TeamsEnabled bool   `json:"teams_enabled"`
 	TeamsURL     string `json:"teams_url"`
+
+	OfflineChannels   []string `json:"offline_channels"`
+	GuardrailChannels []string `json:"guardrail_channels"`
 }
 
 func (s *server) handleGetNotifications(w http.ResponseWriter, r *http.Request, _ store.User) {
@@ -86,21 +94,23 @@ func (s *server) handleGetNotifications(w http.ResponseWriter, r *http.Request, 
 		c.SMTP.To = []string{}
 	}
 	writeJSON(w, http.StatusOK, notifyView{
-		PublicURL:       c.Public,
-		SMTPEnabled:     c.SMTP.Enabled,
-		SMTPHost:        c.SMTP.Host,
-		SMTPPort:        c.SMTP.Port,
-		SMTPUsername:    c.SMTP.Username,
-		SMTPPasswordSet: c.SMTP.Password != "",
-		SMTPFrom:        c.SMTP.From,
-		SMTPTo:          c.SMTP.To,
-		SMTPTLS:         c.SMTP.TLSMode,
-		WebhookEnabled:  c.Webhook.Enabled,
-		WebhookURL:      c.Webhook.URL,
-		WebhookHeaders:  c.Webhook.Headers,
-		TeamsEnabled:    c.Teams.Enabled,
-		TeamsURL:        c.Teams.URL,
-		Health:          health,
+		PublicURL:         c.Public,
+		SMTPEnabled:       c.SMTP.Enabled,
+		SMTPHost:          c.SMTP.Host,
+		SMTPPort:          c.SMTP.Port,
+		SMTPUsername:      c.SMTP.Username,
+		SMTPPasswordSet:   c.SMTP.Password != "",
+		SMTPFrom:          c.SMTP.From,
+		SMTPTo:            c.SMTP.To,
+		SMTPTLS:           c.SMTP.TLSMode,
+		WebhookEnabled:    c.Webhook.Enabled,
+		WebhookURL:        c.Webhook.URL,
+		WebhookHeaders:    c.Webhook.Headers,
+		TeamsEnabled:      c.Teams.Enabled,
+		TeamsURL:          c.Teams.URL,
+		OfflineChannels:   c.OfflineRoute,
+		GuardrailChannels: c.GuardrailRoute,
+		Health:            health,
 	})
 }
 
@@ -130,6 +140,15 @@ func (s *server) handlePutNotifications(w http.ResponseWriter, r *http.Request, 
 			Username: in.SMTPUsername, Password: password, From: in.SMTPFrom, To: in.SMTPTo, TLSMode: in.SMTPTLS},
 		Webhook: notify.WebhookConfig{Enabled: in.WebhookEnabled, URL: in.WebhookURL, Headers: in.WebhookHeaders},
 		Teams:   notify.TeamsConfig{Enabled: in.TeamsEnabled, URL: in.TeamsURL},
+	}
+	var err error
+	if c.OfflineRoute, err = notify.NormalizeRoute(in.OfflineChannels); err != nil {
+		writeErr(w, http.StatusBadRequest, "offline routing: "+err.Error())
+		return
+	}
+	if c.GuardrailRoute, err = notify.NormalizeRoute(in.GuardrailChannels); err != nil {
+		writeErr(w, http.StatusBadRequest, "guardrail routing: "+err.Error())
+		return
 	}
 	// Validate before writing: a partial save would leave the hub in a state the
 	// user never asked for.

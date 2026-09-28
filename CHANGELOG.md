@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Alert routing per rule (lot 7). Each rule picks the channels it notifies: every enabled channel
+  (the default, and what every existing rule keeps doing after migration 7), some of them, or none,
+  in which case the alert still fires and shows but tells nobody. The offline rule and the Azure
+  guardrails get the same choice under Settings → Notifications → Routing.
+  - A `resolved` goes wherever its `fired` went, plus the current route, so re-routing a rule while
+    it fires never leaves a channel with an alert that does not end.
+  - A route naming a channel that is switched off is kept and skipped; the rules table marks it
+    `(off)`.
+  - `channels` on the rule endpoints, `offline_channels` and `guardrail_channels` on
+    `/api/v1/notifications`: `null` for every channel, `[]` for none.
+
 ## [0.6.0] — 2026-09-28
 
 Lot 6 (cost guardrails) is in. No new Azure role is needed; the hub applies database migration 6

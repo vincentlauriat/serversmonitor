@@ -65,7 +65,39 @@ func LoadConfig(g Getter) Config {
 			Enabled: boolean(g, "notify_teams_enabled"),
 			URL:     str(g, "notify_teams_url", ""),
 		},
+		OfflineRoute:   route(g, "notify_route_offline"),
+		GuardrailRoute: route(g, "notify_route_guardrails"),
 	}
+}
+
+// allChannels stands for a nil route in a setting, which cannot be NULL. An
+// absent key reads the same way, so a hub upgraded from before routing
+// existed keeps sending everything everywhere.
+const allChannels = "*"
+
+// route reads a route setting. An unknown name, left by a hand edit, drops
+// the whole route back to every channel: a hub that cannot read its routing
+// must over-notify rather than go quiet.
+func route(g Getter, key string) []string {
+	raw := str(g, key, allChannels)
+	if raw == allChannels {
+		return nil
+	}
+	r, err := NormalizeRoute(splitList(raw))
+	if err != nil {
+		return nil
+	}
+	if r == nil {
+		return []string{}
+	}
+	return r
+}
+
+func encodeRoute(r []string) string {
+	if r == nil {
+		return allChannels
+	}
+	return strings.Join(r, ",")
 }
 
 // splitList drops blanks, so a trailing comma does not become a recipient the
@@ -86,20 +118,22 @@ func SaveConfig(s Setter, c Config) error {
 		return err
 	}
 	for k, v := range map[string]string{
-		"notify_public_url":      c.Public,
-		"notify_smtp_enabled":    strconv.FormatBool(c.SMTP.Enabled),
-		"notify_smtp_host":       c.SMTP.Host,
-		"notify_smtp_port":       strconv.Itoa(c.SMTP.Port),
-		"notify_smtp_username":   c.SMTP.Username,
-		"notify_smtp_password":   c.SMTP.Password,
-		"notify_smtp_from":       c.SMTP.From,
-		"notify_smtp_to":         strings.Join(c.SMTP.To, ","),
-		"notify_smtp_tls":        c.SMTP.TLSMode,
-		"notify_webhook_enabled": strconv.FormatBool(c.Webhook.Enabled),
-		"notify_webhook_url":     c.Webhook.URL,
-		"notify_webhook_headers": string(headers),
-		"notify_teams_enabled":   strconv.FormatBool(c.Teams.Enabled),
-		"notify_teams_url":       c.Teams.URL,
+		"notify_public_url":       c.Public,
+		"notify_smtp_enabled":     strconv.FormatBool(c.SMTP.Enabled),
+		"notify_smtp_host":        c.SMTP.Host,
+		"notify_smtp_port":        strconv.Itoa(c.SMTP.Port),
+		"notify_smtp_username":    c.SMTP.Username,
+		"notify_smtp_password":    c.SMTP.Password,
+		"notify_smtp_from":        c.SMTP.From,
+		"notify_smtp_to":          strings.Join(c.SMTP.To, ","),
+		"notify_smtp_tls":         c.SMTP.TLSMode,
+		"notify_webhook_enabled":  strconv.FormatBool(c.Webhook.Enabled),
+		"notify_webhook_url":      c.Webhook.URL,
+		"notify_webhook_headers":  string(headers),
+		"notify_teams_enabled":    strconv.FormatBool(c.Teams.Enabled),
+		"notify_teams_url":        c.Teams.URL,
+		"notify_route_offline":    encodeRoute(c.OfflineRoute),
+		"notify_route_guardrails": encodeRoute(c.GuardrailRoute),
 	} {
 		if err := s.SetSetting(k, v); err != nil {
 			return err

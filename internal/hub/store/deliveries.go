@@ -146,3 +146,39 @@ func (s *Store) PurgeDeliveries(now time.Time, keep time.Duration) error {
 	_, err := s.db.Exec(`DELETE FROM deliveries WHERE state != 'pending' AND updated_at < ?`, fmtTime(now.Add(-keep)))
 	return err
 }
+
+// FiredChannels returns the channels that were owed the last fired event of
+// (rule, host) older than beforeID, whatever became of those deliveries. A
+// resolved goes there as well as to the current route: a channel that heard
+// an alert start must hear it end, even if the rule was re-routed meanwhile.
+// Empty when that fired is older than the delivery retention.
+func (s *Store) FiredChannels(ruleID, hostID, beforeID int64) ([]string, error) {
+	return s.channels(`SELECT DISTINCT channel FROM deliveries WHERE event_id = (
+		SELECT max(id) FROM alert_events WHERE rule_id = ? AND host_id = ? AND kind = 'fired' AND id < ?)`,
+		ruleID, hostID, beforeID)
+}
+
+// GuardrailFiredChannels is FiredChannels for a guardrail rule instance.
+func (s *Store) GuardrailFiredChannels(k GuardrailKey, beforeID int64) ([]string, error) {
+	return s.channels(`SELECT DISTINCT channel FROM deliveries WHERE guardrail_event_id = (
+		SELECT max(id) FROM azure_guardrail_events
+		WHERE subject = ? AND rule = ? AND detail = ? AND kind = 'fired' AND id < ?)`,
+		k.Subject, k.Rule, k.Detail, beforeID)
+}
+
+func (s *Store) channels(q string, args ...any) ([]string, error) {
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}

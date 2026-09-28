@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { healthLabel, parseHeaders, parseRecipients, toPayload } from './notify';
+import {
+  enabledChannels,
+  healthLabel,
+  parseHeaders,
+  parseRecipients,
+  routeLabel,
+  toggleChannel,
+  toPayload
+} from './notify';
 import type { Notifications } from './api';
 
 const base: Notifications = {
@@ -17,6 +25,8 @@ const base: Notifications = {
   webhook_headers: {},
   teams_enabled: false,
   teams_url: '',
+  offline_channels: null,
+  guardrail_channels: null,
   health: {}
 };
 
@@ -85,5 +95,25 @@ describe('healthLabel', () => {
   });
   it('does not invent a reason when the server gave none', () => {
     expect(healthLabel({ state: 'failed', at: '2026-09-18T03:00:00Z' })).toContain('no reason given');
+  });
+});
+
+describe('routing', () => {
+  it('lists the enabled channels in channel order', () => {
+    expect(enabledChannels({ ...base, teams_enabled: true })).toEqual(['smtp', 'teams']);
+  });
+  it('labels every channel, none, and a switched off channel', () => {
+    expect(routeLabel(null, ['smtp'])).toBe('All channels');
+    expect(routeLabel([], ['smtp'])).toBe('None');
+    expect(routeLabel(['teams', 'smtp'], ['smtp'])).toBe('Email, Teams (off)');
+  });
+  it('toggles a channel and keeps the order', () => {
+    expect(toggleChannel(['teams'], 'smtp')).toEqual(['smtp', 'teams']);
+    expect(toggleChannel(['smtp', 'teams'], 'smtp')).toEqual(['teams']);
+  });
+  it('sends the routes with the rest of the settings', () => {
+    const out = toPayload({ ...base, offline_channels: [], guardrail_channels: null }, null);
+    expect(out.offline_channels).toEqual([]);
+    expect(out.guardrail_channels).toBeNull();
   });
 });
