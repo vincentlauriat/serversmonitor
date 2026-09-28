@@ -193,7 +193,7 @@ delete anything without a person doing it on purpose.
   Changing the subnet is a `Microsoft.Network` write outside its role.
 - **Three channels, one of each.** A rule can go to e-mail, the webhook, Teams, or any mix, but not
   to two different Teams channels or two recipient lists.
-- **One user.** A single local admin account; Entra ID is deferred.
+- **Two roles only.** Admin or read-only; nothing finer, such as per-host or per-resource rights.
 - **No automatic deletion.** Every guardrail only ever alerts or, for an orphan, deletes what a
   person confirmed by name. Nothing is removed on a timer or a threshold.
 
@@ -211,6 +211,7 @@ delete anything without a person doing it on purpose.
 | 8 | Warn when a new VM's subnet cannot reach the internet | **done** |
 | 9 | A time zone per stop schedule | **done** |
 | 10 | Native TLS: certificate files or Let's Encrypt | **done** |
+| 11 | Several people: Microsoft Entra ID sign-in, admin and read-only roles | **done** |
 
 ## Design notes
 

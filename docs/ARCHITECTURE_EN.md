@@ -511,7 +511,13 @@ database and editable from the interface.
   one) or from ACME (`autocert`, TLS-ALPN-01 on the HTTPS port and HTTP-01 on the redirect
   listener, the cache beside the database so a restart does not hit Let's Encrypt's rate limits).
   A reverse proxy in front stays supported; `SM_SECURE_COOKIES=true` behind it.
-- **No user accounts.** One local admin. Entra ID is deferred.
+- **Two roles, not permissions.** Since lot 11 several people sign in: the local admin made at setup,
+  with a password, and Microsoft Entra ID accounts an admin lists by e-mail (the list is the allow
+  list; `common` and `organizations` are refused, and the token's `tid` must equal the configured
+  tenant GUID, since Entra signs every tenant's tokens with the same keys). A viewer only reads:
+  `auth` refuses any non-GET to them, in one place, so a write route added later is closed by
+  default. The last local admin can be neither removed nor demoted: it is the way in when Entra is
+  down. An Entra account has no password at all and the password route refuses it outright.
 - **One channel of each kind.** Routing picks among e-mail, webhook and Teams; there are no two Teams
   channels or two recipient lists. Mute a host to silence it everywhere.
 - **No clustering.** One hub, one SQLite file, one machine.
