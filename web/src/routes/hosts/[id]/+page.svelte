@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { api, type AlertEvent, type Container, type Host, type Point } from '$lib/api';
   import { live } from '$lib/live.svelte';
-  import { fmtAgo, fmtBps, fmtBytes, fmtPct, fmtUptime, metricLabel, periodLabel, periods, type Period } from '$lib/format';
+  import { fmtAgo, fmtBps, fmtBytes, fmtPct, fmtUptime, metricLabel, periodLabel, periods, rateTicks, type Period } from '$lib/format';
   import { diskMounts, diskPct, diskSum, memPct, sensors, temp, toSeries } from '$lib/series';
   import Chart from '$lib/components/Chart.svelte';
 
@@ -54,7 +54,6 @@
   const swapPick = $derived((p: Point) =>
     p.swap_used !== null && host?.latest?.swap_total ? (100 * p.swap_used) / host.latest.swap_total : null
   );
-  const mb = (v: number) => (v / 1_048_576).toFixed(1);
   const pctFmt = (v: number) => v.toFixed(0);
 </script>
 
@@ -115,7 +114,7 @@
 
       <section class="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
         <h2 class="mb-1 text-sm font-medium">Disk I/O</h2>
-        <Chart data={toSeries(points, [diskSum('read_bps'), diskSum('write_bps')])} labels={['Read', 'Write']} unit=" MB/s" format={mb} />
+        <Chart data={toSeries(points, [diskSum('read_bps'), diskSum('write_bps')])} labels={['Read', 'Write']} format={fmtBps} ticks={rateTicks} />
       </section>
 
       <section class="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
@@ -125,8 +124,8 @@
         <Chart
           data={toSeries(points, [(p) => p.net_sent_bps, (p) => p.net_recv_bps])}
           labels={['Sent', 'Received']}
-          unit=" MB/s"
-          format={mb}
+          format={fmtBps}
+          ticks={rateTicks}
         />
       </section>
 

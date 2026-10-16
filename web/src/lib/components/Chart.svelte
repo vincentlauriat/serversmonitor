@@ -1,5 +1,6 @@
 <script lang="ts">
   import uPlot from 'uplot';
+  import { rateIncrs } from '$lib/format';
   import { onMount } from 'svelte';
 
   let {
@@ -7,13 +8,16 @@
     labels,
     unit = '',
     max = undefined,
-    format = (v: number) => `${v}`
+    format = (v: number) => `${v}`,
+    ticks = undefined
   }: {
     data: (number | null)[][];
     labels: string[];
     unit?: string;
     max?: number;
     format?: (v: number) => string;
+    /** Labels for the whole axis at once, when one unit must fit every tick. */
+    ticks?: (vals: number[]) => string[];
   } = $props();
 
   let el: HTMLDivElement;
@@ -37,9 +41,12 @@
           stroke: axisColor,
           grid: { stroke: gridColor },
           // The unit is appended to every tick, so a long one like " MB/s"
-          // needs a wider gutter or the leading digits are clipped.
-          size: 46 + unit.length * 7,
-          values: (_u, vals) => vals.map((v) => format(v) + unit)
+          // needs a wider gutter or the leading digits are clipped. Axis
+          // labels from ticks carry their own unit, up to "1023 KB/s".
+          size: ticks ? 72 : 46 + unit.length * 7,
+          // A rate axis steps in whole binary units, so its labels stay whole.
+          ...(ticks ? { incrs: rateIncrs } : {}),
+          values: (_u, vals) => (ticks ? ticks(vals) : vals.map((v) => format(v) + unit))
         }
       ],
       series: [
