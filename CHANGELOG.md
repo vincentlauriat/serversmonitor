@@ -6,12 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Fixed
-- The Network and Disk I/O charts labelled every tick in MB/s with one decimal, so a few KB/s read
-  as a column of "0.0 MB/s". The axis now picks one unit (B/s to GB/s) from its largest tick, steps
-  in whole binary units, and the hover values use the same readable format as the page header.
+## [0.8.0] — 2026-10-16
+
+Lots 10 and 11 are in. Both are opt-in: without the new TLS variables the hub serves plain HTTP on
+`:8090` as before, and without an Entra app registration nobody but the existing account can sign
+in. The hub applies database migration 10 by itself on first start; the account made at setup
+becomes the local admin and keeps its password.
+
+The hub Docker image no longer sets `SM_LISTEN`. The binary's default is the same `:8090`, so
+nothing changes for an existing container, and the image now moves to `:443` by itself once TLS is
+configured.
 
 ### Added
+- Native TLS (lot 10). The hub can serve HTTPS itself, from a certificate on disk
+  (`SM_TLS_CERT`, `SM_TLS_KEY`), re-read when the files change, or from Let's Encrypt
+  (`SM_TLS_DOMAINS`, `SM_TLS_EMAIL`, `SM_ACME_DIRECTORY`), with TLS-ALPN-01 on the HTTPS port and
+  the cache in the data directory. With TLS on, the hub listens on `:443`, a plain listener on
+  `:80` (`SM_HTTP_LISTEN`, `off` to disable) redirects to HTTPS and answers HTTP-01, and cookies
+  are always Secure. New dependency: `golang.org/x/net`, through
+  `golang.org/x/crypto/acme/autocert`.
 - Several people (lot 11). Sign-in with Microsoft Entra ID (OIDC code flow with PKCE, ID token
   signature, issuer, audience, tenant, expiry and nonce all checked), for addresses an admin lists
   under Settings → Users; two roles, admin and read-only, the latter refused any change by the API
@@ -19,18 +32,15 @@ All notable changes to this project are documented here. The format follows
   removed or demoted while it is the last local admin. Migration 10 (`users.role`,
   `users.provider`); `/api/v1/users`, `/api/v1/auth/entra/settings`, `/start`, `/callback`.
 
+### Fixed
+- The Network and Disk I/O charts labelled every tick in MB/s with one decimal, so a few KB/s read
+  as a column of "0.0 MB/s". The axis now picks one unit (B/s to GB/s) from its largest tick, steps
+  in whole binary units, and the hover values use the same readable format as the page header.
+
 ### Security
 - The password route no longer runs an account without a password against the dummy hash kept for
   timing: before this, a password-less account would have accepted the word used to build that
   hash. No such account could exist before lot 11; Entra accounts are the first.
-
-- Native TLS (lot 10). The hub can serve HTTPS itself, from a certificate on disk
-  (`SM_TLS_CERT`, `SM_TLS_KEY`), re-read when the files change, or from Let's Encrypt
-  (`SM_TLS_DOMAINS`, `SM_TLS_EMAIL`, `SM_ACME_DIRECTORY`), with TLS-ALPN-01 on the HTTPS port and
-  the cache in the data directory. With TLS on, the hub listens on `:443`, a plain listener on
-  `:80` (`SM_HTTP_LISTEN`, `off` to disable) redirects to HTTPS and answers HTTP-01, and cookies
-  are always Secure. Without these variables nothing changes. New dependency: `golang.org/x/net`,
-  through `golang.org/x/crypto/acme/autocert`.
 
 ## [0.7.0] — 2026-09-28
 
@@ -130,6 +140,7 @@ First tagged release. Lots 1 to 5 are in; lot 6 (cost guardrails) is not.
 - `smhub-<os>-<arch>` and `smagent-<os>-<arch>` for linux/amd64, linux/arm64, darwin/amd64,
   darwin/arm64. `install.sh` downloads `smagent-<os>-<arch>` from `releases/latest/download/`.
 
+[0.8.0]: https://github.com/vincentlauriat/serversmonitor/releases/tag/v0.8.0
 [0.7.0]: https://github.com/vincentlauriat/serversmonitor/releases/tag/v0.7.0
 [0.6.0]: https://github.com/vincentlauriat/serversmonitor/releases/tag/v0.6.0
 [0.5.0]: https://github.com/vincentlauriat/serversmonitor/releases/tag/v0.5.0
