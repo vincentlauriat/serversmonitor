@@ -15,20 +15,24 @@ type Delivery struct {
 	EventID          *int64
 	GuardrailEventID *int64
 	Channel          string
-	State            string
-	Attempts         int
-	LastError        string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	State            string // pending | sent | failed | held
+	// Reminder marks a delivery that repeats its fired event (lot 12).
+	Reminder  bool
+	Attempts  int
+	LastError string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
-const deliveryCols = `id, event_id, guardrail_event_id, channel, state, attempts, last_error, created_at, updated_at`
+const deliveryCols = `id, event_id, guardrail_event_id, channel, state, reminder, attempts, last_error, created_at, updated_at`
 
 func scanDelivery(row scanner) (Delivery, error) {
 	var d Delivery
 	var eventID, guardrailEventID sql.NullInt64
 	var created, updated string
-	err := row.Scan(&d.ID, &eventID, &guardrailEventID, &d.Channel, &d.State, &d.Attempts, &d.LastError, &created, &updated)
+	var reminder int
+	err := row.Scan(&d.ID, &eventID, &guardrailEventID, &d.Channel, &d.State, &reminder, &d.Attempts, &d.LastError, &created, &updated)
+	d.Reminder = reminder == 1
 	if errors.Is(err, sql.ErrNoRows) {
 		return d, ErrNotFound
 	}
@@ -51,14 +55,70 @@ func scanDelivery(row scanner) (Delivery, error) {
 // CreateDelivery records the intent to deliver, before anything is attempted.
 // A crash between here and the first send leaves a pending row, not silence.
 func (s *Store) CreateDelivery(eventID int64, channel string, now time.Time) (Delivery, error) {
+	return s.AddDelivery(DeliverySpec{EventID: eventID, Channel: channel}, now)
+}
+
+// DeliverySpec is what a new delivery row says: which event (an alert's or a
+// guardrail's), which channel, whether it repeats the event as a reminder,
+// and whether it is held for the channel's quiet hours rather than pending.
+type DeliverySpec struct {
+	EventID          int64
+	GuardrailEventID int64
+	Channel          string
+	Reminder         bool
+	Held             bool
+}
+
+func (s *Store) AddDelivery(sp DeliverySpec, now time.Time) (Delivery, error) {
 	at := fmtTime(now)
-	res, err := s.db.Exec(`INSERT INTO deliveries(event_id, channel, state, created_at, updated_at) VALUES (?,?,'pending',?,?)`,
-		eventID, channel, at, at)
+	state := "pending"
+	if sp.Held {
+		state = "held"
+	}
+	var eventID, guardID any
+	if sp.GuardrailEventID != 0 {
+		guardID = sp.GuardrailEventID
+	} else {
+		eventID = sp.EventID
+	}
+	res, err := s.db.Exec(`INSERT INTO deliveries(event_id, guardrail_event_id, channel, state, reminder, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?)`, eventID, guardID, sp.Channel, state, boolInt(sp.Reminder), at, at)
 	if err != nil {
 		return Delivery{}, err
 	}
 	id, _ := res.LastInsertId()
 	return s.Delivery(id)
+}
+
+// HeldDeliveries returns, oldest first, what waits for a channel's quiet
+// hours to end.
+func (s *Store) HeldDeliveries() ([]Delivery, error) {
+	return s.queryDeliveries(`SELECT ` + deliveryCols + ` FROM deliveries WHERE state='held' ORDER BY id`)
+}
+
+// ReleaseDelivery turns a held row pending, before anything is sent: a crash
+// right after leaves a pending row, which the boot replay picks up.
+func (s *Store) ReleaseDelivery(id int64, now time.Time) error {
+	return s.execOne(`UPDATE deliveries SET state='pending', updated_at=? WHERE id=? AND state='held'`, fmtTime(now), id)
+}
+
+// LastReminder is when a fired event was last repeated to anyone, or false
+// when it never was. Read from the deliveries, so a restart does not send a
+// burst of reminders a memory-only clock would think were due.
+func (s *Store) LastReminder(eventID int64, guardrail bool) (time.Time, bool, error) {
+	col := "event_id"
+	if guardrail {
+		col = "guardrail_event_id"
+	}
+	var at sql.NullString
+	if err := s.db.QueryRow(`SELECT max(created_at) FROM deliveries WHERE `+col+` = ? AND reminder = 1`, eventID).Scan(&at); err != nil {
+		return time.Time{}, false, err
+	}
+	if !at.Valid || at.String == "" {
+		return time.Time{}, false, nil
+	}
+	t, err := parseTime(at.String)
+	return t, err == nil, err
 }
 
 func (s *Store) Delivery(id int64) (Delivery, error) {
@@ -128,8 +188,10 @@ func (s *Store) DeliveryEvent(id int64) (AlertEvent, Host, error) {
 // ChannelHealth returns the most recent delivery of each channel. The settings
 // page shows it because "configured" and "working" are different claims.
 func (s *Store) ChannelHealth() (map[string]Delivery, error) {
+	// A held row says nothing about whether the channel works: it was never
+	// tried. The newest row that was is the answer.
 	ds, err := s.queryDeliveries(`SELECT ` + deliveryCols + ` FROM deliveries d
-		WHERE d.id = (SELECT max(id) FROM deliveries WHERE channel = d.channel)`)
+		WHERE d.id = (SELECT max(id) FROM deliveries WHERE channel = d.channel AND state != 'held')`)
 	if err != nil {
 		return nil, err
 	}
@@ -140,10 +202,10 @@ func (s *Store) ChannelHealth() (map[string]Delivery, error) {
 	return out, nil
 }
 
-// PurgeDeliveries drops settled rows older than keep. A pending row is work not
-// yet done and is never purged by age.
+// PurgeDeliveries drops settled rows older than keep. A pending or held row is
+// work not yet done and is never purged by age.
 func (s *Store) PurgeDeliveries(now time.Time, keep time.Duration) error {
-	_, err := s.db.Exec(`DELETE FROM deliveries WHERE state != 'pending' AND updated_at < ?`, fmtTime(now.Add(-keep)))
+	_, err := s.db.Exec(`DELETE FROM deliveries WHERE state IN ('sent','failed') AND updated_at < ?`, fmtTime(now.Add(-keep)))
 	return err
 }
 

@@ -287,6 +287,22 @@ func TestQueueFullDropsAResolvedOnlyAsALastResort(t *testing.T) {
 	}
 }
 
+// A reminder only repeats what was already said: it goes before any fired.
+func TestQueueFullDropsAReminderBeforeAFired(t *testing.T) {
+	rec := newRecorder(0)
+	d := NewDispatcher(rec, Options{Queue: 2, Sleep: func(context.Context, time.Duration) bool { return true }})
+	ch := newFake("smtp")
+	reminder := fired()
+	reminder.Kind = KindReminder
+	d.Enqueue(Job{DeliveryID: 1, Channel: ch, Message: fired()})
+	d.Enqueue(Job{DeliveryID: 2, Channel: ch, Message: reminder})
+	d.Enqueue(Job{DeliveryID: 3, Channel: ch, Message: fired()})
+	ids := d.queued()
+	if len(ids) != 2 || ids[0] != 1 || ids[1] != 3 {
+		t.Fatalf("queue = %v, want the reminder (2) dropped and both fired kept", ids)
+	}
+}
+
 func TestShutdownStopsRetryingAndLeavesTheRowPending(t *testing.T) {
 	// Deterministic by construction rather than by timing: the real sleepCtx is
 	// used with an hour-long base, so after the first failure the worker is

@@ -14,7 +14,18 @@
     type UserRow
   } from '$lib/api';
   import { canEdit, isLastLocalAdmin, providerLabel, roleLabel } from '$lib/users';
-  import { enabledChannels, healthLabel, parseHeaders, parseRecipients, routeLabel, toPayload } from '$lib/notify';
+  import {
+    deliveryState,
+    enabledChannels,
+    healthLabel,
+    parseHeaders,
+    parseRecipients,
+    REMIND_CHOICES,
+    remindLabel,
+    routeLabel,
+    toPayload
+  } from '$lib/notify';
+  import QuietHours from '$lib/components/QuietHours.svelte';
   import { parseGroups, toSettingsPayload } from '$lib/azure';
   import { parseThresholds } from '$lib/guardrails';
   import Modal from '$lib/components/Modal.svelte';
@@ -165,7 +176,8 @@
         metric: r.metric,
         threshold: Number(r.threshold),
         duration_sec: Number(r.duration_sec),
-        channels: r.channels
+        channels: r.channels,
+        remind_minutes: Number(r.remind_minutes ?? 0)
       };
       if (r.id) await api.put(`/api/v1/alerts/rules/${r.id}`, body);
       else await api.post('/api/v1/alerts/rules', body);
@@ -335,7 +347,7 @@
 {:else if tab === 'alerts'}
   <button
     class="mb-3 rounded bg-zinc-900 px-3 py-1.5 text-sm text-white dark:bg-zinc-100 dark:text-zinc-900"
-    onclick={() => (editing = { id: 0, host_id: null, metric: 'cpu', threshold: 90, duration_sec: 600, channels: null })}
+    onclick={() => (editing = { id: 0, host_id: null, metric: 'cpu', threshold: 90, duration_sec: 600, channels: null, remind_minutes: 0 })}
   >
     Add rule
   </button>
@@ -363,7 +375,7 @@
             <td class="px-3 py-2 tabular-nums">{r.threshold}</td>
             <td class="px-3 py-2 tabular-nums">{Math.round(r.duration_sec / 60)} min</td>
             <td class="px-3 py-2" class:text-zinc-500={r.channels !== null && r.channels.length === 0}>
-              {routeLabel(r.channels, savedOn)}
+              {routeLabel(r.channels, savedOn)}{#if r.remind_minutes}<span class="ml-1 text-zinc-500">· {remindLabel(r.remind_minutes)}</span>{/if}
             </td>
             <td class="space-x-3 px-3 py-2 text-right whitespace-nowrap">
               <button class="hover:underline" onclick={() => (editing = { ...r })}>Edit</button>
@@ -402,6 +414,12 @@
           <legend class="mb-1">Notify</legend>
           <ChannelPicker name="rule-route" bind:value={editing.channels} enabled={savedOn} />
         </fieldset>
+        <label class="block">
+          Remind while it lasts
+          <select class="mt-1 w-full rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-800" bind:value={editing.remind_minutes}>
+            {#each REMIND_CHOICES as [m, label] (m)}<option value={m}>{label}</option>{/each}
+          </select>
+        </label>
         <div class="flex justify-end gap-2">
           <button type="button" class="rounded border border-zinc-300 px-3 py-1.5 dark:border-zinc-700" onclick={() => (editing = null)}>Cancel</button>
           <button class="rounded bg-zinc-900 px-3 py-1.5 text-white dark:bg-zinc-100 dark:text-zinc-900">Save</button>
@@ -465,6 +483,7 @@
             <textarea class={inp} rows="3" bind:value={recipients} placeholder="vincent@example.com"></textarea>
           </label>
         </div>
+        <QuietHours bind:value={notif.quiet.smtp} zone={notif.quiet_zone} />
         <button type="button" class="{testBtn} mt-3" disabled={!notif.smtp_enabled || testing !== ''} onclick={() => testChannel('smtp')}>
           {testing === 'smtp' ? 'Sending…' : 'Send test'}
         </button>
@@ -486,6 +505,7 @@
           A JSON body is posted with the host, metric, value, threshold and a link. ntfy also reads the title and
           priority from headers, which are sent too.
         </p>
+        <QuietHours bind:value={notif.quiet.webhook} zone={notif.quiet_zone} />
         <button type="button" class="{testBtn} mt-3" disabled={!notif.webhook_enabled || testing !== ''} onclick={() => testChannel('webhook')}>
           {testing === 'webhook' ? 'Sending…' : 'Send test'}
         </button>
@@ -503,6 +523,7 @@
           Paste the HTTP URL of a Power Automate workflow using the “When a Teams webhook request is received”
           trigger. Office 365 connector URLs (<code>outlook.office.com/webhook/…</code>) stopped working in May 2026.
         </p>
+        <QuietHours bind:value={notif.quiet.teams} zone={notif.quiet_zone} />
         <button type="button" class="{testBtn} mt-3" disabled={!notif.teams_enabled || testing !== ''} onclick={() => testChannel('teams')}>
           {testing === 'teams' ? 'Sending…' : 'Send test'}
         </button>
@@ -518,10 +539,16 @@
           <fieldset>
             <legend class="mb-1 font-medium">Host offline</legend>
             <ChannelPicker name="offline-route" bind:value={notif.offline_channels} enabled={savedOn} />
+            <select class="{inp} mt-2" bind:value={notif.offline_remind_minutes} aria-label="Remind about a host still offline">
+              {#each REMIND_CHOICES as [m, label] (m)}<option value={m}>{m ? `Remind: ${label.toLowerCase()}` : 'No reminder'}</option>{/each}
+            </select>
           </fieldset>
           <fieldset>
             <legend class="mb-1 font-medium">Azure guardrails</legend>
             <ChannelPicker name="guardrail-route" bind:value={notif.guardrail_channels} enabled={savedOn} />
+            <select class="{inp} mt-2" bind:value={notif.guardrail_remind_minutes} aria-label="Remind about a guardrail still fired">
+              {#each REMIND_CHOICES as [m, label] (m)}<option value={m}>{m ? `Remind: ${label.toLowerCase()}` : 'No reminder'}</option>{/each}
+            </select>
           </fieldset>
         </div>
       </div>
@@ -552,8 +579,8 @@
             <tr class="border-t border-zinc-100 first:border-t-0 dark:border-zinc-800">
               <td class="px-3 py-2">{d.channel}</td>
               <td class="px-3 py-2">{d.host || '—'}</td>
-              <td class="px-3 py-2">{d.metric} {d.kind}</td>
-              <td class="px-3 py-2" class:text-red-600={d.state === 'failed'}>{d.state}</td>
+              <td class="px-3 py-2">{d.metric} {d.reminder ? 'reminder' : d.kind}</td>
+              <td class="px-3 py-2" class:text-red-600={d.state === 'failed'} class:text-zinc-500={d.state === 'held'}>{deliveryState(d)}</td>
               <td class="px-3 py-2">{d.attempts}</td>
               <td class="px-3 py-2 text-zinc-500">{d.last_error || '—'}</td>
               <td class="px-3 py-2 whitespace-nowrap text-zinc-500">{new Date(d.at).toLocaleString()}</td>

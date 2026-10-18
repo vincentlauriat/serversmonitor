@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Getter and Setter are the two halves of the settings table this package uses.
@@ -65,9 +66,22 @@ func LoadConfig(g Getter) Config {
 			Enabled: boolean(g, "notify_teams_enabled"),
 			URL:     str(g, "notify_teams_url", ""),
 		},
-		OfflineRoute:   route(g, "notify_route_offline"),
-		GuardrailRoute: route(g, "notify_route_guardrails"),
+		OfflineRoute:    route(g, "notify_route_offline"),
+		GuardrailRoute:  route(g, "notify_route_guardrails"),
+		OfflineRemind:   time.Duration(integer(g, "notify_remind_offline", 0)) * time.Minute,
+		GuardrailRemind: time.Duration(integer(g, "notify_remind_guardrails", 0)) * time.Minute,
+		Quiet:           quiet(g),
 	}
+}
+
+func quiet(g Getter) map[string]string {
+	out := map[string]string{}
+	for _, ch := range ChannelNames {
+		if v := str(g, "notify_quiet_"+ch, ""); v != "" && v != "[]" {
+			out[ch] = v
+		}
+	}
+	return out
 }
 
 // allChannels stands for a nil route in a setting, which cannot be NULL. An
@@ -118,22 +132,27 @@ func SaveConfig(s Setter, c Config) error {
 		return err
 	}
 	for k, v := range map[string]string{
-		"notify_public_url":       c.Public,
-		"notify_smtp_enabled":     strconv.FormatBool(c.SMTP.Enabled),
-		"notify_smtp_host":        c.SMTP.Host,
-		"notify_smtp_port":        strconv.Itoa(c.SMTP.Port),
-		"notify_smtp_username":    c.SMTP.Username,
-		"notify_smtp_password":    c.SMTP.Password,
-		"notify_smtp_from":        c.SMTP.From,
-		"notify_smtp_to":          strings.Join(c.SMTP.To, ","),
-		"notify_smtp_tls":         c.SMTP.TLSMode,
-		"notify_webhook_enabled":  strconv.FormatBool(c.Webhook.Enabled),
-		"notify_webhook_url":      c.Webhook.URL,
-		"notify_webhook_headers":  string(headers),
-		"notify_teams_enabled":    strconv.FormatBool(c.Teams.Enabled),
-		"notify_teams_url":        c.Teams.URL,
-		"notify_route_offline":    encodeRoute(c.OfflineRoute),
-		"notify_route_guardrails": encodeRoute(c.GuardrailRoute),
+		"notify_public_url":        c.Public,
+		"notify_smtp_enabled":      strconv.FormatBool(c.SMTP.Enabled),
+		"notify_smtp_host":         c.SMTP.Host,
+		"notify_smtp_port":         strconv.Itoa(c.SMTP.Port),
+		"notify_smtp_username":     c.SMTP.Username,
+		"notify_smtp_password":     c.SMTP.Password,
+		"notify_smtp_from":         c.SMTP.From,
+		"notify_smtp_to":           strings.Join(c.SMTP.To, ","),
+		"notify_smtp_tls":          c.SMTP.TLSMode,
+		"notify_webhook_enabled":   strconv.FormatBool(c.Webhook.Enabled),
+		"notify_webhook_url":       c.Webhook.URL,
+		"notify_webhook_headers":   string(headers),
+		"notify_teams_enabled":     strconv.FormatBool(c.Teams.Enabled),
+		"notify_teams_url":         c.Teams.URL,
+		"notify_route_offline":     encodeRoute(c.OfflineRoute),
+		"notify_route_guardrails":  encodeRoute(c.GuardrailRoute),
+		"notify_remind_offline":    strconv.Itoa(int(c.OfflineRemind / time.Minute)),
+		"notify_remind_guardrails": strconv.Itoa(int(c.GuardrailRemind / time.Minute)),
+		"notify_quiet_smtp":        c.Quiet["smtp"],
+		"notify_quiet_webhook":     c.Quiet["webhook"],
+		"notify_quiet_teams":       c.Quiet["teams"],
 	} {
 		if err := s.SetSetting(k, v); err != nil {
 			return err

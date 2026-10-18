@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -172,5 +173,25 @@ func TestRetryableMarking(t *testing.T) {
 	}
 	if Retryable(nil) {
 		t.Fatal("nil is not retryable")
+	}
+}
+
+func TestAReminderReadsAsAStillFiringAlert(t *testing.T) {
+	since := time.Date(2026, 10, 18, 2, 0, 0, 0, time.UTC)
+	m := Message{HostName: "pi", Metric: "disk", Kind: KindReminder, Value: 97, Threshold: 90,
+		Duration: 30 * time.Minute, At: since.Add(4 * time.Hour), Since: since}
+	if !m.Alarming() || m.Fired() || m.Priority() != 4 || m.Tags()[0] != "rotating_light" {
+		t.Fatalf("a reminder is alarming like a fired alert: %+v", m)
+	}
+	if !strings.Contains(m.Title(), "(reminder)") || !strings.Contains(m.Body(), "Firing: since 2026-10-18 02:00:00 UTC") {
+		t.Fatalf("title %q body %q", m.Title(), m.Body())
+	}
+	off := Message{HostName: "pi", Metric: "status", Kind: KindReminder, Since: since}
+	if off.Title() != "pi is still offline" {
+		t.Fatalf("offline reminder = %q", off.Title())
+	}
+	card, _ := json.Marshal(TeamsCard(m))
+	if !strings.Contains(string(card), "🔴") || strings.Contains(string(card), "🟢") {
+		t.Fatalf("a reminder card is red, not green: %s", card)
 	}
 }

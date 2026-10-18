@@ -194,6 +194,23 @@ demande aucune modification. **Un `resolved` part là où est parti son `fired`,
 actuelle** : les canaux sont relus sur les lignes de livraison du `fired`, donc une règle reroutée
 pendant une alerte ne laisse jamais un canal avec une alerte qui ne finit pas.
 
+**Rappels et heures calmes (lot 12).** Une règle peut répéter son alerte déclenchée toutes les N
+minutes tant qu'elle dure (`alert_rules.remind_minutes`, 0 jamais) ; la règle offline et les garde
+fous ont le même choix en réglages. Un rappel est une ligne de livraison de l'événement `fired`
+qu'il répète (`deliveries.reminder`), jamais une ligne à part dans un journal : `alert_events` et
+`azure_guardrail_events` se lisent comme « la dernière ligne est l'état courant », et un rappel là
+ferait qu'une alerte active cesse d'avoir l'air active. Le dernier rappel est relu dans les
+livraisons, donc un redémarrage n'envoie pas de rafale. Une règle supprimée pendant une alerte, un
+hôte en sourdine et ce qui est déjà résolu ne sont jamais rappelés. Chaque canal peut avoir des
+heures calmes, au format des fenêtres des plannings d'arrêt et dans le fuseau du hub : ce qui lui
+est dû pendant ce temps est écrit en ligne `held`, libérée en `pending` à la première minute
+d'après, dans l'ordre, avec l'heure de l'événement ; une ligne retenue n'est jamais purgée ni lue
+comme la santé du canal, et un canal éteint entre temps la retire en échec. **Un hôte qui tombe ou
+revient passe outre les heures calmes.** Les rappels sont sautés sur un canal calme plutôt que
+retenus, pour que le matin reçoive le rappel dû et pas une nuit entière. Un rappel est la première
+chose qu'une file pleine abandonne, avant un `fired`. Des heures calmes couvrant toute la semaine
+sont refusées : c'est un canal éteint, et ce qu'il retiendrait attendrait pour toujours.
+
 **La ligne de livraison est écrite avant la première tentative.** C'est ce qui permet à un hub tué en
 plein retry de rejouer le travail au démarrage suivant au lieu de le perdre en silence. La
 conséquence est assumée et affichée dans l'interface : **la livraison est au moins une fois**. Un

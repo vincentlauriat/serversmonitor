@@ -27,6 +27,8 @@ type WebhookPayload struct {
 	Tags      []string `json:"tags"`
 	Link      string   `json:"link,omitempty"`
 	At        string   `json:"at"`
+	// Since is set on a reminder only: when the alert it repeats fired.
+	Since string `json:"since,omitempty"`
 }
 
 type Webhook struct {
@@ -45,7 +47,8 @@ func (w *Webhook) Send(ctx context.Context, m Message) error {
 		Host: m.HostName, HostID: m.HostID, Metric: m.Metric, Kind: m.Kind,
 		Value: m.Value, Threshold: m.Threshold, Title: m.Title(), Message: m.Body(),
 		Priority: m.Priority(), Tags: m.Tags(), Link: m.Link,
-		At: m.At.UTC().Format(time.RFC3339),
+		At:    m.At.UTC().Format(time.RFC3339),
+		Since: since(m),
 	})
 	if err != nil {
 		return err // a payload we cannot even encode will never encode
@@ -95,4 +98,11 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+func since(m Message) string {
+	if !m.Reminder() || m.Since.IsZero() {
+		return ""
+	}
+	return m.Since.UTC().Format(time.RFC3339)
 }

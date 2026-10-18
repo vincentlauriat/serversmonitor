@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Reminders and quiet hours (lot 12). A rule can repeat its alert every N minutes while it stays
+  fired (`remind_minutes`, never by default, so existing rules behave as before); the offline rule
+  and the Azure guardrails have the same setting. Each channel can have quiet hours, read in the
+  hub-wide zone: what is owed to it then waits and goes out when they end, oldest first, while a
+  host going offline is sent at once. Reminders are skipped on a quiet channel, not stacked.
+  Migration 11 (`alert_rules.remind_minutes`, `deliveries.reminder`); a delivery can now be `held`.
+  - **Webhook contract**: `kind` can now be `reminder`, with a new `since` field (when the alert
+    fired). A receiver that only knows `fired` and `resolved` should treat an unknown kind as
+    informational.
+  - API: `remind_minutes` on rules; `offline_remind_minutes`, `guardrail_remind_minutes`, `quiet`
+    (per channel, the stop schedule window format) and the read-only `quiet_zone` on
+    `/api/v1/notifications`; `reminder` and the `held` state on deliveries. As with routes, a
+    `PUT /api/v1/notifications` without these fields resets them.
+
 ## [0.8.0] — 2026-10-16
 
 Lots 10 and 11 are in. Both are opt-in: without the new TLS variables the hub serves plain HTTP on

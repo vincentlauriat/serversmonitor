@@ -217,3 +217,21 @@ func LastBoundary(ws []Window, loc *time.Location, t time.Time) (time.Time, bool
 	}
 	return best, off, ok
 }
+
+// CoversWholeWeek says whether the windows leave no minute of the week out.
+// Quiet hours like that are a channel switched off, and held deliveries would
+// wait forever (lot 12), so they are refused. Checked in UTC; window
+// boundaries fall on whole minutes, so every minute of one week is sampled:
+// a gap of a single minute is still a gap a person meant.
+func CoversWholeWeek(ws []Window) bool {
+	if len(ws) == 0 {
+		return false
+	}
+	start := time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC) // a Monday
+	for t := start; t.Before(start.Add(7 * 24 * time.Hour)); t = t.Add(time.Minute) {
+		if !Off(ws, time.UTC, t) {
+			return false
+		}
+	}
+	return true
+}

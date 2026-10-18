@@ -121,9 +121,16 @@ func (d *Dispatcher) Enqueue(jobs ...Job) {
 	}
 }
 
-// victim picks the oldest fired job, or the oldest job of any kind when every
-// queued job is a recovery. Caller holds the lock.
+// victim picks the oldest reminder, then the oldest fired job, and the oldest
+// job of any kind only when every queued job is a recovery. A reminder only
+// repeats what was already said, so it is the cheapest thing to lose.
+// Caller holds the lock.
 func (d *Dispatcher) victim() int {
+	for i, j := range d.jobs {
+		if j.Message.Reminder() {
+			return i
+		}
+	}
 	for i, j := range d.jobs {
 		if j.Message.Fired() {
 			return i

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  deliveryState,
   enabledChannels,
   healthLabel,
   parseHeaders,
   parseRecipients,
+  remindLabel,
   routeLabel,
   toggleChannel,
   toPayload
@@ -27,6 +29,10 @@ const base: Notifications = {
   teams_url: '',
   offline_channels: null,
   guardrail_channels: null,
+  offline_remind_minutes: 0,
+  guardrail_remind_minutes: 0,
+  quiet: {},
+  quiet_zone: 'Europe/Paris',
   health: {}
 };
 
@@ -115,5 +121,24 @@ describe('routing', () => {
     const out = toPayload({ ...base, offline_channels: [], guardrail_channels: null }, null);
     expect(out.offline_channels).toEqual([]);
     expect(out.guardrail_channels).toBeNull();
+  });
+});
+
+describe('reminders and quiet hours', () => {
+  it('labels intervals', () => {
+    expect(remindLabel(0)).toBe('');
+    expect(remindLabel(30)).toBe('every 30 min');
+    expect(remindLabel(240)).toBe('every 4 h');
+    expect(remindLabel(1440)).toBe('daily');
+  });
+  it('says why a row waits', () => {
+    expect(deliveryState({ state: 'held' })).toBe('held (quiet hours)');
+    expect(deliveryState({ state: 'sent' })).toBe('sent');
+  });
+  it('never sends the read-only zone back', () => {
+    const out = toPayload({ ...base, quiet: { smtp: [] }, quiet_zone: 'UTC', offline_remind_minutes: 30, guardrail_remind_minutes: 0 }, null);
+    expect(out.quiet_zone).toBeUndefined();
+    expect(out.offline_remind_minutes).toBe(30);
+    expect(out.quiet).toEqual({ smtp: [] });
   });
 });

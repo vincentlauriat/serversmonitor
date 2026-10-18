@@ -86,14 +86,7 @@ func (s *Store) ListGuardrailEvents(limit int) ([]GuardrailEvent, error) {
 }
 
 func (s *Store) CreateGuardrailDelivery(eventID int64, channel string, now time.Time) (Delivery, error) {
-	ts := now.UTC().Format(time.RFC3339Nano)
-	res, err := s.db.Exec(`INSERT INTO deliveries (guardrail_event_id, channel, state, created_at, updated_at) VALUES (?,?,'pending',?,?)`,
-		eventID, channel, ts, ts)
-	if err != nil {
-		return Delivery{}, err
-	}
-	id, _ := res.LastInsertId()
-	return s.Delivery(id)
+	return s.AddDelivery(DeliverySpec{GuardrailEventID: eventID, Channel: channel}, now)
 }
 
 // DeliveryGuardrailEvent answers ErrNotFound for a delivery that is about an

@@ -22,6 +22,9 @@ import (
 )
 
 type Hub struct {
+	// nowFn is the clock the notification paths read; nil is the real one.
+	// Tests set it to place a transition inside or outside quiet hours.
+	nowFn   func() time.Time
 	cfg     config.Config
 	log     *slog.Logger
 	st      *store.Store
@@ -161,6 +164,8 @@ func (h *Hub) Run(ctx context.Context) error {
 		case <-minute.C:
 			h.evaluate()
 			h.applySchedules(time.Now().UTC())
+			h.releaseHeld(time.Now().UTC())
+			h.remind(time.Now().UTC())
 		case <-h.akick:
 			// The settings changed. Sync now, and realign both tickers: they
 			// were built with whatever cadence was in force at boot, which for
@@ -244,4 +249,11 @@ func (h *Hub) hourly() {
 	if err := h.st.PurgeDeliveries(now, 30*24*time.Hour); err != nil {
 		h.log.Error("purge deliveries", "err", err)
 	}
+}
+
+func (h *Hub) now() time.Time {
+	if h.nowFn != nil {
+		return h.nowFn().UTC()
+	}
+	return time.Now().UTC()
 }

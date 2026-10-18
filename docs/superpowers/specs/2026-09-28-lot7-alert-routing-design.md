@@ -105,5 +105,5 @@ normalised to the channel order, so a route reads the same everywhere.
 ## 8. Out of scope
 
 Per-host routes (a rule scoped to one host already gives that). Several instances of one channel
-type, such as two Teams channels or two recipient lists: channels stay three singletons. Quiet
-hours, escalation, and repeat reminders for a long-firing alert.
+type, such as two Teams channels or two recipient lists: channels stay three singletons.
+Escalation. (Quiet hours and repeat reminders for a long-firing alert came later, in lot 12.)
