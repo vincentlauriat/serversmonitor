@@ -9,6 +9,10 @@ import (
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 )
 
+// maxRemindMinutes bounds a reminder interval at a week: past that it is not
+// a reminder, it is a new alert someone forgot to write.
+const maxRemindMinutes = 7 * 24 * 60
+
 var validMetrics = map[string]bool{"cpu": true, "memory": true, "disk": true, "load": true, "temperature": true, "bandwidth": true}
 
 type ruleView struct {
@@ -19,11 +23,14 @@ type ruleView struct {
 	DurationSec int64   `json:"duration_sec"`
 	// Channels is null for every enabled channel, [] for none.
 	Channels []string `json:"channels"`
+	// RemindMinutes repeats a fired alert this often while it lasts; 0 never.
+	RemindMinutes int64 `json:"remind_minutes"`
 }
 
 func toRuleView(r store.Rule) ruleView {
 	return ruleView{ID: r.ID, HostID: r.HostID, Metric: r.Metric, Threshold: r.Threshold,
-		DurationSec: int64(r.Duration / time.Second), Channels: r.Channels}
+		DurationSec: int64(r.Duration / time.Second), Channels: r.Channels,
+		RemindMinutes: int64(r.Remind / time.Minute)}
 }
 
 type eventView struct {
@@ -125,8 +132,12 @@ func (s *server) readRule(w http.ResponseWriter, r *http.Request) (store.Rule, s
 	if err != nil {
 		return store.Rule{}, err.Error()
 	}
+	if body.RemindMinutes < 0 || body.RemindMinutes > maxRemindMinutes {
+		return store.Rule{}, "reminders are every 0 (never) to 10080 minutes (a week)"
+	}
 	return store.Rule{HostID: body.HostID, Metric: body.Metric, Threshold: body.Threshold,
-		Duration: time.Duration(body.DurationSec) * time.Second, Channels: channels}, ""
+		Duration: time.Duration(body.DurationSec) * time.Second, Channels: channels,
+		Remind: time.Duration(body.RemindMinutes) * time.Minute}, ""
 }
 
 func (s *server) handleCreateRule(w http.ResponseWriter, r *http.Request, _ store.User) {

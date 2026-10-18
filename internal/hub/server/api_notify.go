@@ -2,10 +2,13 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/vincentlauriat/serversmonitor/internal/hub/azure"
+	"github.com/vincentlauriat/serversmonitor/internal/hub/guardrails"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/notify"
 	"github.com/vincentlauriat/serversmonitor/internal/hub/store"
 )
@@ -44,6 +47,13 @@ type notifyView struct {
 	OfflineChannels   []string `json:"offline_channels"`
 	GuardrailChannels []string `json:"guardrail_channels"`
 
+	// Reminders of the two transitions without a rule row, in minutes, 0
+	// never; and each channel's quiet hours, read in QuietZone (lot 12).
+	OfflineRemindMinutes   int64                          `json:"offline_remind_minutes"`
+	GuardrailRemindMinutes int64                          `json:"guardrail_remind_minutes"`
+	Quiet                  map[string][]guardrails.Window `json:"quiet"`
+	QuietZone              string                         `json:"quiet_zone"`
+
 	Health map[string]healthView `json:"health"`
 }
 
@@ -77,6 +87,10 @@ type notifyInput struct {
 
 	OfflineChannels   []string `json:"offline_channels"`
 	GuardrailChannels []string `json:"guardrail_channels"`
+
+	OfflineRemindMinutes   int64                          `json:"offline_remind_minutes"`
+	GuardrailRemindMinutes int64                          `json:"guardrail_remind_minutes"`
+	Quiet                  map[string][]guardrails.Window `json:"quiet"`
 }
 
 func (s *server) handleGetNotifications(w http.ResponseWriter, r *http.Request, _ store.User) {
@@ -94,23 +108,27 @@ func (s *server) handleGetNotifications(w http.ResponseWriter, r *http.Request, 
 		c.SMTP.To = []string{}
 	}
 	writeJSON(w, http.StatusOK, notifyView{
-		PublicURL:         c.Public,
-		SMTPEnabled:       c.SMTP.Enabled,
-		SMTPHost:          c.SMTP.Host,
-		SMTPPort:          c.SMTP.Port,
-		SMTPUsername:      c.SMTP.Username,
-		SMTPPasswordSet:   c.SMTP.Password != "",
-		SMTPFrom:          c.SMTP.From,
-		SMTPTo:            c.SMTP.To,
-		SMTPTLS:           c.SMTP.TLSMode,
-		WebhookEnabled:    c.Webhook.Enabled,
-		WebhookURL:        c.Webhook.URL,
-		WebhookHeaders:    c.Webhook.Headers,
-		TeamsEnabled:      c.Teams.Enabled,
-		TeamsURL:          c.Teams.URL,
-		OfflineChannels:   c.OfflineRoute,
-		GuardrailChannels: c.GuardrailRoute,
-		Health:            health,
+		PublicURL:              c.Public,
+		SMTPEnabled:            c.SMTP.Enabled,
+		SMTPHost:               c.SMTP.Host,
+		SMTPPort:               c.SMTP.Port,
+		SMTPUsername:           c.SMTP.Username,
+		SMTPPasswordSet:        c.SMTP.Password != "",
+		SMTPFrom:               c.SMTP.From,
+		SMTPTo:                 c.SMTP.To,
+		SMTPTLS:                c.SMTP.TLSMode,
+		WebhookEnabled:         c.Webhook.Enabled,
+		WebhookURL:             c.Webhook.URL,
+		WebhookHeaders:         c.Webhook.Headers,
+		TeamsEnabled:           c.Teams.Enabled,
+		TeamsURL:               c.Teams.URL,
+		OfflineChannels:        c.OfflineRoute,
+		GuardrailChannels:      c.GuardrailRoute,
+		OfflineRemindMinutes:   int64(c.OfflineRemind / time.Minute),
+		GuardrailRemindMinutes: int64(c.GuardrailRemind / time.Minute),
+		Quiet:                  quietView(c),
+		QuietZone:              s.Azure.GuardrailSettings().Location().String(),
+		Health:                 health,
 	})
 }
 
@@ -148,6 +166,18 @@ func (s *server) handlePutNotifications(w http.ResponseWriter, r *http.Request, 
 	}
 	if c.GuardrailRoute, err = notify.NormalizeRoute(in.GuardrailChannels); err != nil {
 		writeErr(w, http.StatusBadRequest, "guardrail routing: "+err.Error())
+		return
+	}
+	for _, m := range []int64{in.OfflineRemindMinutes, in.GuardrailRemindMinutes} {
+		if m < 0 || m > maxRemindMinutes {
+			writeErr(w, http.StatusBadRequest, "reminders are every 0 (never) to 10080 minutes (a week)")
+			return
+		}
+	}
+	c.OfflineRemind = time.Duration(in.OfflineRemindMinutes) * time.Minute
+	c.GuardrailRemind = time.Duration(in.GuardrailRemindMinutes) * time.Minute
+	if c.Quiet, err = quietInput(in.Quiet); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	// Validate before writing: a partial save would leave the hub in a state the
@@ -192,7 +222,8 @@ func (s *server) handleTestNotification(w http.ResponseWriter, r *http.Request, 
 type deliveryView struct {
 	ID        int64     `json:"id"`
 	Channel   string    `json:"channel"`
-	State     string    `json:"state"`
+	State     string    `json:"state"` // pending | sent | failed | held
+	Reminder  bool      `json:"reminder"`
 	Attempts  int       `json:"attempts"`
 	LastError string    `json:"last_error,omitempty"`
 	Host      string    `json:"host"`
@@ -210,7 +241,7 @@ func (s *server) handleDeliveries(w http.ResponseWriter, r *http.Request, _ stor
 	var names map[string]string
 	out := make([]deliveryView, 0, len(ds))
 	for _, d := range ds {
-		v := deliveryView{ID: d.ID, Channel: d.Channel, State: d.State, Attempts: d.Attempts,
+		v := deliveryView{ID: d.ID, Channel: d.Channel, State: d.State, Reminder: d.Reminder, Attempts: d.Attempts,
 			LastError: d.LastError, At: d.UpdatedAt}
 		if e, host, err := s.Store.DeliveryEvent(d.ID); err == nil {
 			v.Host, v.Metric, v.Kind = host.Name, e.Metric, e.Kind
@@ -234,4 +265,45 @@ func (s *server) handleDeliveries(w http.ResponseWriter, r *http.Request, _ stor
 		out = append(out, v)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// quietView decodes each channel's stored quiet hours for the page: [] for
+// none, never null, so the page's round trip sends back what it got.
+func quietView(c notify.Config) map[string][]guardrails.Window {
+	out := map[string][]guardrails.Window{}
+	for _, ch := range notify.ChannelNames {
+		ws, err := guardrails.ParseWindows(c.Quiet[ch])
+		if err != nil || ws == nil {
+			ws = []guardrails.Window{}
+		}
+		out[ch] = ws
+	}
+	return out
+}
+
+// quietInput checks quiet hours with the stop schedules' own rules, and
+// refuses windows that cover the whole week: that is a channel switched off,
+// and what it held would wait forever.
+func quietInput(in map[string][]guardrails.Window) (map[string]string, error) {
+	out := map[string]string{}
+	for ch, ws := range in {
+		if _, err := notify.NormalizeRoute([]string{ch}); err != nil {
+			return nil, fmt.Errorf("quiet hours: %w", err)
+		}
+		raw, err := json.Marshal(ws)
+		if err != nil {
+			return nil, fmt.Errorf("quiet hours for %s: %w", ch, err)
+		}
+		parsed, err := guardrails.ParseWindows(string(raw))
+		if err != nil {
+			return nil, fmt.Errorf("quiet hours for %s: %w", ch, err)
+		}
+		if guardrails.CoversWholeWeek(parsed) {
+			return nil, fmt.Errorf("quiet hours for %s cover the whole week; switch the channel off instead", ch)
+		}
+		if len(parsed) > 0 {
+			out[ch] = guardrails.EncodeWindows(parsed)
+		}
+	}
+	return out, nil
 }
