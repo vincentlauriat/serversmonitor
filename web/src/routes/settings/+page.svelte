@@ -375,7 +375,7 @@
             <td class="px-3 py-2 tabular-nums">{r.threshold}</td>
             <td class="px-3 py-2 tabular-nums">{Math.round(r.duration_sec / 60)} min</td>
             <td class="px-3 py-2" class:text-zinc-500={r.channels !== null && r.channels.length === 0}>
-              {routeLabel(r.channels, savedOn)}{#if r.remind_minutes}<span class="text-zinc-500"> · {remindLabel(r.remind_minutes)}</span>{/if}
+              {routeLabel(r.channels, savedOn)}{#if r.remind_minutes}<span class="ml-1 text-zinc-500">· {remindLabel(r.remind_minutes)}</span>{/if}
             </td>
             <td class="space-x-3 px-3 py-2 text-right whitespace-nowrap">
               <button class="hover:underline" onclick={() => (editing = { ...r })}>Edit</button>
