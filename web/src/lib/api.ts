@@ -74,6 +74,8 @@ export interface Rule {
   duration_sec: number;
   /** null: every enabled channel. []: none, the alert only shows here. */
   channels: string[] | null;
+  /** Repeat a fired alert this often while it lasts; 0 never. */
+  remind_minutes: number;
 }
 export interface AlertEvent {
   id: number;
@@ -148,12 +150,20 @@ export interface Notifications {
   /** Routes of the offline rule and the Azure guardrails, same shape as Rule.channels. */
   offline_channels: string[] | null;
   guardrail_channels: string[] | null;
+  offline_remind_minutes: number;
+  guardrail_remind_minutes: number;
+  /** Each channel's quiet hours; [] for none. */
+  quiet: Record<string, Window[]>;
+  /** The zone quiet hours are read in, the hub-wide one. Read only. */
+  quiet_zone: string;
   health: Record<string, NotifyHealth>;
 }
 export interface Delivery {
   id: number;
   channel: string;
+  /** pending | sent | failed | held (waiting for quiet hours to end) */
   state: string;
+  reminder: boolean;
   attempts: number;
   last_error?: string;
   host: string;

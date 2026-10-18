@@ -30,7 +30,7 @@ export function parseHeaders(raw: string): Record<string, string> {
  * which clears it.
  */
 export function toPayload(v: Notifications, password: string | null): Record<string, unknown> {
-  const { smtp_password_set: _set, health: _health, ...rest } = v;
+  const { smtp_password_set: _set, health: _health, quiet_zone: _zone, ...rest } = v;
   const out: Record<string, unknown> = { ...rest };
   if (password !== null) out.smtp_password = password;
   return out;
@@ -74,4 +74,29 @@ export function routeLabel(route: string[] | null, enabled: string[]): string {
 export function toggleChannel(route: string[], channel: string): string[] {
   const next = route.includes(channel) ? route.filter((c) => c !== channel) : [...route, channel];
   return CHANNELS.map(([k]) => k).filter((k) => next.includes(k));
+}
+
+/** Reminder intervals offered by the page, in minutes; 0 is never. */
+export const REMIND_CHOICES: [number, string][] = [
+  [0, 'Never'],
+  [15, 'Every 15 min'],
+  [30, 'Every 30 min'],
+  [60, 'Every hour'],
+  [120, 'Every 2 hours'],
+  [240, 'Every 4 hours'],
+  [720, 'Every 12 hours'],
+  [1440, 'Every day']
+];
+
+/** A short label for a reminder interval, "" for never. */
+export function remindLabel(minutes: number): string {
+  if (!minutes) return '';
+  if (minutes % 1440 === 0) return minutes === 1440 ? 'daily' : `every ${minutes / 1440} d`;
+  if (minutes % 60 === 0) return `every ${minutes / 60} h`;
+  return `every ${minutes} min`;
+}
+
+/** What a delivery row is about, as the log says it. */
+export function deliveryState(d: { state: string }): string {
+  return d.state === 'held' ? 'held (quiet hours)' : d.state;
 }
