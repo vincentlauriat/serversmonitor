@@ -189,6 +189,22 @@ and skipped, so enabling that channel later needs no edit. **A `resolved` goes w
 went, plus the current route**: the channels are read back from the `fired`'s delivery rows, so a
 rule re-routed mid-alert never leaves a channel with an alert that does not end.
 
+**Reminders and quiet hours (lot 12).** A rule may repeat its fired alert every N minutes while it
+lasts (`alert_rules.remind_minutes`, 0 never); the offline rule and the guardrails have the same
+choice as settings. A reminder is a delivery row of the fired event it repeats (`deliveries.reminder`),
+never a row of its own in a journal: `alert_events` and `azure_guardrail_events` are read as "the
+last row is the current state", and a reminder there would make a firing alert stop looking like
+it fires. The last reminder is read back from the deliveries, so a restart sends no burst. A rule
+deleted while firing, a muted host and anything already resolved are never reminded. Each channel
+may have quiet hours, in the stop schedules' window format and the hub-wide zone: what it is owed
+then is written as a `held` row and released as `pending` on the first minute after, oldest first,
+with the event's own time; a held row is never purged and never read as the channel's health, and
+a channel switched off meanwhile retires it as failed. **A host going offline, or coming back,
+ignores quiet hours.** Reminders are skipped on a quiet channel rather than held, so the morning
+gets the one reminder that is due, not a night of them. A reminder is the first thing a full queue
+drops, before a fired. Quiet hours covering the whole week are refused: that is a channel switched
+off, and what it held would wait forever.
+
 **A delivery row is written before the first attempt.** That is what lets a hub killed mid-retry
 replay the work on the next boot instead of losing it silently. The consequence is accepted and
 stated in the interface: **delivery is at least once**. A crash between a channel's 200 and the

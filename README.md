@@ -212,6 +212,7 @@ delete anything without a person doing it on purpose.
 | 9 | A time zone per stop schedule | **done** |
 | 10 | Native TLS: certificate files or Let's Encrypt | **done** |
 | 11 | Several people: Microsoft Entra ID sign-in, admin and read-only roles | **done** |
+| 12 | Reminders for alerts that last, quiet hours per channel | **done** |
 
 ## Design notes
 
