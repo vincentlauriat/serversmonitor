@@ -17,7 +17,7 @@ type Message struct {
 	HostID    int64
 	HostName  string
 	Metric    string
-	Kind      string // fired | resolved
+	Kind      string // fired | resolved | reminder
 	Value     float64
 	Threshold float64
 	Duration  time.Duration
@@ -29,9 +29,25 @@ type Message struct {
 	// is not a safe discriminator between the two, since the implicit status
 	// rule (host offline/online) also has an empty ValueText.
 	Guardrail bool
+
+	// Since is when a reminder's alert fired. Zero on any other kind.
+	Since time.Time
 }
 
-func (m Message) Fired() bool { return m.Kind == "fired" }
+// Kinds. A reminder repeats a fired alert that has not resolved yet (lot 12):
+// it looks like a fired alert and is the first thing dropped from a full queue.
+const (
+	KindFired    = "fired"
+	KindResolved = "resolved"
+	KindReminder = "reminder"
+)
+
+func (m Message) Fired() bool    { return m.Kind == KindFired }
+func (m Message) Reminder() bool { return m.Kind == KindReminder }
+
+// Alarming says whether the message is about something wrong right now: a
+// fired alert or a reminder of one. It decides the colour, priority and tags.
+func (m Message) Alarming() bool { return m.Fired() || m.Reminder() }
 
 // ValueText renders the value with the unit its metric is measured in.
 // The implicit status rule has no value worth showing: "offline 1" means nothing.
@@ -67,8 +83,11 @@ func (m Message) ValueText() string {
 
 func (m Message) Title() string {
 	if m.Metric == "status" {
-		if m.Fired() {
+		switch {
+		case m.Fired():
 			return m.HostName + " is offline"
+		case m.Reminder():
+			return m.HostName + " is still offline"
 		}
 		return m.HostName + " is back online"
 	}
@@ -98,6 +117,9 @@ func (m Message) Body() string {
 			fmt.Fprintf(&b, "Value:   %s\n", v)
 		}
 		fmt.Fprintf(&b, "Time:    %s\n", m.At.UTC().Format("2006-01-02 15:04:05 UTC"))
+		if m.Reminder() && !m.Since.IsZero() {
+			fmt.Fprintf(&b, "Firing:  since %s\n", m.Since.UTC().Format("2006-01-02 15:04:05 UTC"))
+		}
 		if m.Link != "" {
 			fmt.Fprintf(&b, "\n%s\n", m.Link)
 		}
@@ -111,6 +133,9 @@ func (m Message) Body() string {
 		b.WriteString("Rule:   no sample for three intervals\n")
 	}
 	fmt.Fprintf(&b, "Time:   %s\n", m.At.UTC().Format("2006-01-02 15:04:05 UTC"))
+	if m.Reminder() && !m.Since.IsZero() {
+		fmt.Fprintf(&b, "Firing: since %s\n", m.Since.UTC().Format("2006-01-02 15:04:05 UTC"))
+	}
 	if m.Link != "" {
 		fmt.Fprintf(&b, "\n%s\n", m.Link)
 	}
@@ -134,14 +159,14 @@ func shortDuration(d time.Duration) string {
 
 // Priority and Tags are ntfy's vocabulary; other receivers ignore them.
 func (m Message) Priority() int {
-	if m.Fired() {
+	if m.Alarming() {
 		return 4
 	}
 	return 3
 }
 
 func (m Message) Tags() []string {
-	if m.Fired() {
+	if m.Alarming() {
 		return []string{"rotating_light"}
 	}
 	return []string{"white_check_mark"}

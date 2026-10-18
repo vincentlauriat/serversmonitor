@@ -22,7 +22,7 @@ const teamsMaxHostName = 200
 // with a 429, contentUrl required and null.
 func TeamsCard(m Message) map[string]any {
 	title := "🔴 " + m.Title()
-	if !m.Fired() {
+	if !m.Alarming() {
 		title = "🟢 " + m.Title()
 	}
 	facts := []map[string]any{
