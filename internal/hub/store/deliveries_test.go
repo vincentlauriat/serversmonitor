@@ -209,3 +209,66 @@ func TestGuardrailFiredChannels(t *testing.T) {
 		t.Fatalf("guardrail fired channels = %v %v, want [teams]", got, err)
 	}
 }
+
+// A held row is work owed to a channel in its quiet hours: never purged by
+// age, never read as the channel's health, released as pending.
+func TestHeldDeliveries(t *testing.T) {
+	s := openTest(t)
+	h, _, _ := s.CreateHost("a", t0)
+	e, _ := s.InsertAlertEvent(AlertEvent{RuleID: 1, HostID: h.ID, Metric: "cpu", Kind: "fired", At: t0})
+	sent, _ := s.CreateDelivery(e.ID, "smtp", t0)
+	s.MarkDeliverySent(sent.ID, t0, 1)
+	held, err := s.AddDelivery(DeliverySpec{EventID: e.ID, Channel: "smtp", Held: true}, t0.Add(time.Minute))
+	if err != nil || held.State != "held" {
+		t.Fatalf("held = %+v %v", held, err)
+	}
+	if hs, _ := s.ChannelHealth(); hs["smtp"].ID != sent.ID {
+		t.Fatalf("health must ignore a held row, got %+v", hs["smtp"])
+	}
+	if p, _ := s.PendingDeliveries(); len(p) != 0 {
+		t.Fatal("a held row is not pending: the boot replay must leave it alone")
+	}
+	s.PurgeDeliveries(t0.Add(365*24*time.Hour), time.Hour)
+	if hd, _ := s.HeldDeliveries(); len(hd) != 1 {
+		t.Fatal("a held row must never be purged by age")
+	}
+	if err := s.ReleaseDelivery(held.ID, t0.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := s.PendingDeliveries(); len(p) != 1 || p[0].ID != held.ID {
+		t.Fatalf("released = %+v", p)
+	}
+	if err := s.ReleaseDelivery(held.ID, t0); err != ErrNotFound {
+		t.Fatalf("releasing twice = %v", err)
+	}
+}
+
+func TestLastReminderAndRuleInterval(t *testing.T) {
+	s := openTest(t)
+	h, _, _ := s.CreateHost("a", t0)
+	e, _ := s.InsertAlertEvent(AlertEvent{RuleID: 1, HostID: h.ID, Metric: "cpu", Kind: "fired", At: t0})
+	if _, ok, _ := s.LastReminder(e.ID, false); ok {
+		t.Fatal("never reminded")
+	}
+	s.CreateDelivery(e.ID, "smtp", t0) // the fired itself is not a reminder
+	d, _ := s.AddDelivery(DeliverySpec{EventID: e.ID, Channel: "smtp", Reminder: true}, t0.Add(2*time.Hour))
+	if !d.Reminder {
+		t.Fatalf("delivery = %+v", d)
+	}
+	if at, ok, err := s.LastReminder(e.ID, false); !ok || err != nil || !at.Equal(t0.Add(2*time.Hour)) {
+		t.Fatalf("last reminder = %v %v %v", at, ok, err)
+	}
+	g, _ := s.InsertGuardrailEvent(GuardrailEvent{Subject: "budget", Rule: "budget_threshold", Detail: "80", Kind: "fired", At: t0})
+	s.AddDelivery(DeliverySpec{GuardrailEventID: g.ID, Channel: "teams", Reminder: true}, t0.Add(time.Hour))
+	if at, ok, _ := s.LastReminder(g.ID, true); !ok || !at.Equal(t0.Add(time.Hour)) {
+		t.Fatalf("guardrail last reminder = %v %v", at, ok)
+	}
+
+	r, _ := s.CreateRule(Rule{Metric: "disk", Threshold: 90, Remind: 4 * time.Hour}, t0)
+	rules, _ := s.ListRules()
+	for _, x := range rules {
+		if x.ID == r.ID && x.Remind != 4*time.Hour {
+			t.Fatalf("remind = %v", x.Remind)
+		}
+	}
+}

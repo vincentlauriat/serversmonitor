@@ -19,6 +19,8 @@ type Rule struct {
 	Threshold float64
 	Duration  time.Duration
 	Channels  []string
+	// Remind repeats a fired alert this often while it stays fired; 0 never.
+	Remind    time.Duration
 	CreatedAt time.Time
 }
 
@@ -59,8 +61,8 @@ type AlertEvent struct {
 }
 
 func (s *Store) CreateRule(r Rule, now time.Time) (Rule, error) {
-	res, err := s.db.Exec(`INSERT INTO alert_rules(host_id, metric, threshold, duration_sec, channels, created_at) VALUES (?,?,?,?,?,?)`,
-		r.HostID, r.Metric, r.Threshold, int64(r.Duration/time.Second), encodeChannels(r.Channels), fmtTime(now))
+	res, err := s.db.Exec(`INSERT INTO alert_rules(host_id, metric, threshold, duration_sec, channels, remind_minutes, created_at) VALUES (?,?,?,?,?,?,?)`,
+		r.HostID, r.Metric, r.Threshold, int64(r.Duration/time.Second), encodeChannels(r.Channels), int64(r.Remind/time.Minute), fmtTime(now))
 	if err != nil {
 		return r, err
 	}
@@ -70,8 +72,8 @@ func (s *Store) CreateRule(r Rule, now time.Time) (Rule, error) {
 }
 
 func (s *Store) UpdateRule(r Rule) error {
-	return s.execOne(`UPDATE alert_rules SET host_id=?, metric=?, threshold=?, duration_sec=?, channels=? WHERE id=?`,
-		r.HostID, r.Metric, r.Threshold, int64(r.Duration/time.Second), encodeChannels(r.Channels), r.ID)
+	return s.execOne(`UPDATE alert_rules SET host_id=?, metric=?, threshold=?, duration_sec=?, channels=?, remind_minutes=? WHERE id=?`,
+		r.HostID, r.Metric, r.Threshold, int64(r.Duration/time.Second), encodeChannels(r.Channels), int64(r.Remind/time.Minute), r.ID)
 }
 
 func (s *Store) DeleteRule(id int64) error {
@@ -79,7 +81,7 @@ func (s *Store) DeleteRule(id int64) error {
 }
 
 func (s *Store) ListRules() ([]Rule, error) {
-	rows, err := s.db.Query(`SELECT id, host_id, metric, threshold, duration_sec, channels, created_at FROM alert_rules ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, host_id, metric, threshold, duration_sec, channels, remind_minutes, created_at FROM alert_rules ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -90,8 +92,9 @@ func (s *Store) ListRules() ([]Rule, error) {
 		var hostID sql.NullInt64
 		var sec int64
 		var channels sql.NullString
+		var remind int64
 		var created string
-		if err := rows.Scan(&r.ID, &hostID, &r.Metric, &r.Threshold, &sec, &channels, &created); err != nil {
+		if err := rows.Scan(&r.ID, &hostID, &r.Metric, &r.Threshold, &sec, &channels, &remind, &created); err != nil {
 			return nil, err
 		}
 		if hostID.Valid {
@@ -100,6 +103,7 @@ func (s *Store) ListRules() ([]Rule, error) {
 		}
 		r.Duration = time.Duration(sec) * time.Second
 		r.Channels = decodeChannels(channels)
+		r.Remind = time.Duration(remind) * time.Minute
 		if r.CreatedAt, err = parseTime(created); err != nil {
 			return nil, err
 		}
