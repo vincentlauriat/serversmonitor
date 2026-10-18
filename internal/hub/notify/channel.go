@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Channel delivers one message. It knows nothing about retries or queues.
@@ -47,6 +48,14 @@ type Config struct {
 	// none, the same convention as a rule's Channels.
 	OfflineRoute   []string
 	GuardrailRoute []string
+	// Reminders for the same two (lot 12): how often a fired one is
+	// repeated while it lasts; 0 never. A rule carries its own.
+	OfflineRemind   time.Duration
+	GuardrailRemind time.Duration
+	// Quiet holds each channel's quiet hours as the JSON window list the
+	// stop schedules use, "" for none. Parsed and checked by the hub with
+	// guardrails.ParseWindows, which this package does not import.
+	Quiet map[string]string
 }
 
 // ChannelNames is every channel the hub knows, in the order it builds them.

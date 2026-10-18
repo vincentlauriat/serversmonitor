@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeSettings map[string]string
@@ -16,10 +17,13 @@ func TestConfigRoundTrip(t *testing.T) {
 		Public: "https://hub.example",
 		SMTP: SMTPConfig{Enabled: true, Host: "smtp.example", Port: 587, Username: "u", Password: "p",
 			From: "hub@example", To: []string{"a@example", "b@example"}, TLSMode: "starttls"},
-		Webhook:        WebhookConfig{Enabled: true, URL: "https://ntfy.example/sm", Headers: map[string]string{"Authorization": "Bearer t"}},
-		Teams:          TeamsConfig{Enabled: true, URL: "https://api.powerautomate.com/x"},
-		OfflineRoute:   []string{"smtp", "teams"},
-		GuardrailRoute: []string{},
+		Webhook:         WebhookConfig{Enabled: true, URL: "https://ntfy.example/sm", Headers: map[string]string{"Authorization": "Bearer t"}},
+		Teams:           TeamsConfig{Enabled: true, URL: "https://api.powerautomate.com/x"},
+		OfflineRoute:    []string{"smtp", "teams"},
+		GuardrailRoute:  []string{},
+		OfflineRemind:   time.Hour,
+		GuardrailRemind: 24 * time.Hour,
+		Quiet:           map[string]string{"smtp": `[{"days":[1,2,3,4,5,6,7],"from":"22:00","to":"07:00"}]`},
 	}
 	st := fakeSettings{}
 	if err := SaveConfig(st, want); err != nil {

@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -32,7 +31,7 @@ func (h *Hub) notify(events []store.AlertEvent) {
 	}
 	cfg := *h.ncfg.Load()
 	rules := h.ruleIndex()
-	now := time.Now().UTC()
+	now := h.now()
 	var jobs []notify.Job
 	for _, e := range events {
 		host, err := h.st.Host(e.HostID)
@@ -47,13 +46,19 @@ func (h *Hub) notify(events []store.AlertEvent) {
 			}
 		}
 		m := h.message(cfg, e, host, rules)
+		offline := e.RuleID == alerts.StatusRuleID
 		for _, ch := range notify.Route(chans, alertRoute(cfg, e, rules), also) {
-			d, err := h.st.CreateDelivery(e.ID, ch.Name(), now)
+			// A channel in its quiet hours gets a held row, released when
+			// they end: nothing is lost, it only waits (lot 12).
+			held := h.holdFor(cfg, ch.Name(), offline, now)
+			d, err := h.st.AddDelivery(store.DeliverySpec{EventID: e.ID, Channel: ch.Name(), Held: held}, now)
 			if err != nil {
 				h.log.Error("notify: create delivery", "err", err)
 				continue
 			}
-			jobs = append(jobs, notify.Job{DeliveryID: d.ID, Channel: ch, Message: m})
+			if !held {
+				jobs = append(jobs, notify.Job{DeliveryID: d.ID, Channel: ch, Message: m})
+			}
 		}
 	}
 	h.dispatch.Enqueue(jobs...)
@@ -109,7 +114,7 @@ func (h *Hub) notifyGuardrails(events []store.GuardrailEvent) {
 		return
 	}
 	cfg := *h.ncfg.Load()
-	now := time.Now().UTC()
+	now := h.now()
 	names := h.resourceNames()
 	var jobs []notify.Job
 	for _, e := range events {
@@ -123,12 +128,15 @@ func (h *Hub) notifyGuardrails(events []store.GuardrailEvent) {
 		}
 		m := guardrailMessage(cfg, e, names[e.Subject])
 		for _, ch := range notify.Route(chans, cfg.GuardrailRoute, also) {
-			d, err := h.st.CreateGuardrailDelivery(e.ID, ch.Name(), now)
+			held := h.holdFor(cfg, ch.Name(), false, now)
+			d, err := h.st.AddDelivery(store.DeliverySpec{GuardrailEventID: e.ID, Channel: ch.Name(), Held: held}, now)
 			if err != nil {
 				h.log.Error("notify: create guardrail delivery", "err", err)
 				continue
 			}
-			jobs = append(jobs, notify.Job{DeliveryID: d.ID, Channel: ch, Message: m})
+			if !held {
+				jobs = append(jobs, notify.Job{DeliveryID: d.ID, Channel: ch, Message: m})
+			}
 		}
 	}
 	h.dispatch.Enqueue(jobs...)
@@ -163,13 +171,8 @@ func (h *Hub) replayPendingDeliveries() {
 		h.log.Error("replay deliveries", "err", err)
 		return
 	}
-	byName := map[string]notify.Channel{}
-	for _, c := range *h.channels.Load() {
-		byName[c.Name()] = c
-	}
-	cfg := *h.ncfg.Load()
-	names := h.resourceNames()
-	rules := h.ruleIndex()
+	byName := h.channelsByName()
+	b := h.newRebuilder(*h.ncfg.Load())
 	var jobs []notify.Job
 	for _, d := range pending {
 		ch, ok := byName[d.Channel]
@@ -181,19 +184,9 @@ func (h *Hub) replayPendingDeliveries() {
 			}
 			continue
 		}
-		e, host, err := h.st.DeliveryEvent(d.ID)
-		if err == nil {
-			jobs = append(jobs, notify.Job{DeliveryID: d.ID, Channel: ch, Message: h.message(cfg, e, host, rules)})
-			continue
+		if job, ok := b.job(d, ch); ok {
+			jobs = append(jobs, job)
 		}
-		if !errors.Is(err, store.ErrNotFound) {
-			continue
-		}
-		ge, err := h.st.DeliveryGuardrailEvent(d.ID)
-		if err != nil {
-			continue // the event is gone, and so is its delivery, by cascade
-		}
-		jobs = append(jobs, notify.Job{DeliveryID: d.ID, Channel: ch, Message: guardrailMessage(cfg, ge, names[ge.Subject])})
 	}
 	if len(jobs) > 0 {
 		h.log.Info("replaying deliveries left by a previous run", "count", len(jobs))

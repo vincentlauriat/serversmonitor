@@ -140,3 +140,12 @@ func TestDaylightSavingHalfHourZone(t *testing.T) {
 		t.Fatalf("the boundary must be the first (pre-transition) occurrence: got %v, want %v", b1, lordHoweFirst)
 	}
 }
+
+func TestCoversWholeWeek(t *testing.T) {
+	all := []Window{{Days: []int{1, 2, 3, 4, 5, 6, 7}, From: "00:00", To: "24:00"}}
+	nights := []Window{{Days: []int{1, 2, 3, 4, 5, 6, 7}, From: "22:00", To: "07:00"}}
+	oneGap := []Window{{Days: []int{1, 2, 3, 4, 5, 6, 7}, From: "00:00", To: "23:59"}}
+	if !CoversWholeWeek(all) || CoversWholeWeek(nights) || CoversWholeWeek(oneGap) || CoversWholeWeek(nil) {
+		t.Fatal("whole week = all only")
+	}
+}
