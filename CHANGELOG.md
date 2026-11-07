@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-11-07
+
+Lot 12 is in, and it is opt-in: no rule reminds and no channel has quiet hours until someone sets
+them. The hub applies database migration 11 by itself on first start.
+
+This release also publishes binaries again. Versions 0.6.0 to 0.8.0 were only written down here,
+with no tag and no assets, so `install.sh` kept downloading the 0.5.0 agent until now.
+
 ### Added
 - Reminders and quiet hours (lot 12). A rule can repeat its alert every N minutes while it stays
   fired (`remind_minutes`, never by default, so existing rules behave as before); the offline rule
@@ -155,6 +163,7 @@ First tagged release. Lots 1 to 5 are in; lot 6 (cost guardrails) is not.
 - `smhub-<os>-<arch>` and `smagent-<os>-<arch>` for linux/amd64, linux/arm64, darwin/amd64,
   darwin/arm64. `install.sh` downloads `smagent-<os>-<arch>` from `releases/latest/download/`.
 
+[0.9.0]: https://github.com/vincentlauriat/serversmonitor/releases/tag/v0.9.0
 [0.8.0]: https://github.com/vincentlauriat/serversmonitor/releases/tag/v0.8.0
 [0.7.0]: https://github.com/vincentlauriat/serversmonitor/releases/tag/v0.7.0
 [0.6.0]: https://github.com/vincentlauriat/serversmonitor/releases/tag/v0.6.0
